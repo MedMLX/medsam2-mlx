@@ -684,6 +684,7 @@ class RunnerArguments(TypedDict, total=False):
     hu_window: Sequence[float] | None
     propagation: Propagation
     slice_range: Sequence[int] | None
+    stop_after_empty: int | None
     apply_postprocessing: bool
     overwrite: bool
 
@@ -710,6 +711,7 @@ class RunnerDetails(TypedDict):
     hu_window: list[float] | None
     propagation: Propagation
     slice_range: list[int] | None
+    stop_after_empty: int | None
     postprocessing_applied: bool
     coordinate_space: Literal["image_voxel"]
     output_shape: list[int]
@@ -764,3 +766,4 @@ class PromptedRunArguments(TypedDict):
     prompts: NotRequired[Sequence[Mapping[str, object]] | None]
     hu_window: NotRequired[Sequence[float] | None]
     slice_range: NotRequired[Sequence[int] | None]
+    stop_after_empty: NotRequired[int | None]
