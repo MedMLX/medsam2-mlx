@@ -614,7 +614,12 @@ class SAM2VideoPredictor:
         else:
             end_frame_idx = min(start_frame_idx + max_frame_num_to_track, num_frames - 1)
             order = range(start_frame_idx, end_frame_idx + 1)
-        for frame_idx in order:
+        for position, frame_idx in enumerate(order):
+            next_frame_idx = order[position + 1] if position + 1 < len(order) else None
+            if next_frame_idx is not None and not any(
+                next_frame_idx in frames for frames in consolidated_frame_inds.values()
+            ):
+                self._prefetch_image_feature(inference_state, next_frame_idx)
             if frame_idx in consolidated_frame_inds["cond_frame_outputs"]:
                 storage_key = "cond_frame_outputs"
                 current_out = output_dict[storage_key][frame_idx]
@@ -787,6 +792,9 @@ class SAM2VideoPredictor:
     ) -> ImageFeatures:
         """Encode one session frame into backbone features."""
         return self.model.forward_image(self._frame(inference_state, frame_idx))
+
+    def _prefetch_image_feature(self, inference_state: SessionState, frame_idx: int) -> None:
+        """Hint that propagation will track ``frame_idx`` next; the base class ignores it."""
 
     def _get_image_feature(
         self, inference_state: SessionState, frame_idx: int, batch_size: int

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast, overload
 
 if TYPE_CHECKING:
-    from mlx.core import array
+    from mlx.core import ThreadLocalStream, array
 import numpy as np
 from medmlx_core.errors import AssetNotReadyError
 
@@ -61,6 +61,8 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
     produce nonfinite pointer positions; the predictor raises ``ValueError`` when
     its per-frame output check detects nonfinite values.
     """
+
+    _prefetch_stream: ThreadLocalStream | None = None
 
     def init_state(
         self,
@@ -135,17 +137,44 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
     def _get_image_feature(
         self, inference_state: SessionState, frame_idx: int, batch_size: int
     ) -> ImageFeatures:
-        """Cache requested frame features and broadcast them for the object batch."""
+        """Cache requested frame features and broadcast them for the object batch.
+
+        Without ``keep_image_features`` the cache holds this frame and the frame
+        prefetched for the next propagation step, if any.
+        """
         cache = inference_state["cached_features"]
         if frame_idx not in cache:
             mx = import_mlx()
             backbone = self._compute_image_feature(inference_state, frame_idx)
             mx.eval(backbone["backbone_fpn"], backbone["vision_pos_enc"])
-            if inference_state.get("keep_image_features"):
-                cache[frame_idx] = backbone
-            else:
-                inference_state["cached_features"] = {frame_idx: backbone}
+            cache[frame_idx] = backbone
+        if not inference_state.get("keep_image_features"):
+            keep = {frame_idx, inference_state.get("prefetched_frame_idx")}
+            inference_state["cached_features"] = {
+                index: value for index, value in cache.items() if index in keep
+            }
         return super()._get_image_feature(inference_state, frame_idx, batch_size)
+
+    def _prefetch_image_feature(self, inference_state: SessionState, frame_idx: int) -> None:
+        """Start encoding the next propagation frame on a separate GPU stream.
+
+        Image features depend only on the frame, so the encoder for frame t+1 can run
+        while frame t is tracked and its masks are post-processed on the host. MLX
+        orders the default stream's later reads of these features after this stream's
+        work. The frame is read, and a host frame validated, one step early.
+        """
+        if frame_idx in inference_state["cached_features"]:
+            return
+        mx = import_mlx()
+        if self._prefetch_stream is None:
+            # Streams are bound to the creating thread; a thread-local stream lets a
+            # predictor be driven from different threads.
+            self._prefetch_stream = mx.new_thread_local_stream(mx.gpu)
+        with mx.stream(self._prefetch_stream):
+            backbone = self._compute_image_feature(inference_state, frame_idx)
+            mx.async_eval(backbone["backbone_fpn"], backbone["vision_pos_enc"])
+        inference_state["cached_features"][frame_idx] = backbone
+        inference_state["prefetched_frame_idx"] = frame_idx
 
     def _store_tensor(self, inference_state: SessionState, value: Tensor) -> Tensor:
         """Offload state tensors to host memory when the session requests it."""
@@ -186,9 +215,11 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
         if compact["maskmem_features"] is not None:
             arrays.append(mx.array(compact["maskmem_features"]))
         # MLX is lazy: evaluate here so each frame's work finishes before the next one
-        # and non-finite output is caught at the frame that produced it.
-        mx.eval(*arrays)
-        if not all(bool(mx.all(mx.isfinite(value)).item()) for value in arrays):
+        # and non-finite output is caught at the frame that produced it. One combined
+        # flag keeps this to a single host synchronization per frame.
+        finite = mx.all(mx.stack([mx.all(mx.isfinite(value)) for value in arrays]))
+        mx.eval(*arrays, finite)
+        if not finite.item():
             raise ValueError("MedSAM2 MLX produced nonfinite output")
         return compact, pred_masks
 

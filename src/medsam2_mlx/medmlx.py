@@ -321,17 +321,45 @@ def prepare_medsam2_images(stack: HostArray) -> HostArray:
     (``(x / 255 - mean) / std``) by table lookup. This is the pinned CT example's
     preprocessing, cast to FP32 for the native MLX graph.
     """
+    prepared = np.empty((len(stack), 3, 512, 512), dtype=np.float32)
+    for index, frame in enumerate(stack):
+        _prepare_frame(frame, out=prepared[index])
+    return prepared
+
+
+def _prepare_frame(frame: HostArray, *, out: HostArray) -> None:
+    """Write one uint8 ``(H, W)`` slice into ``out`` as in ``prepare_medsam2_images``."""
     from PIL import Image
 
-    prepared = np.empty((len(stack), 3, 512, 512), dtype=np.float32)
-    table = _normalization_table()
-    for index, frame in enumerate(stack):
-        image = Image.fromarray(frame.astype(np.uint8))
-        if image.size != (512, 512):
-            image = image.resize((512, 512), resample=Image.Resampling.BICUBIC)
-        # Uint8 indices are already in range; clip avoids take's exception buffer.
-        np.take(table, np.asarray(image), axis=1, out=prepared[index], mode="clip")
-    return prepared
+    image = Image.fromarray(frame.astype(np.uint8))
+    if image.size != (512, 512):
+        image = image.resize((512, 512), resample=Image.Resampling.BICUBIC)
+    # Uint8 indices are already in range; clip avoids take's exception buffer.
+    np.take(_normalization_table(), np.asarray(image), axis=1, out=out, mode="clip")
+
+
+class _PreparedStack:
+    """Lazy ``PreparedVideoFrames`` over a uint8 ``(D, H, W)`` stack.
+
+    Each access prepares one slice exactly as ``prepare_medsam2_images`` does, so a
+    session never holds the whole FP32 (D, 3, 512, 512) stack (4 bytes x 3 channels
+    per 512 x 512 voxel) and the predictor's next-frame prefetch overlaps this host
+    work with GPU tracking.
+    """
+
+    def __init__(self, stack: HostArray) -> None:
+        """Wrap the uint8 slice stack without copying it."""
+        self._stack = stack
+
+    def __len__(self) -> int:
+        """Return the number of slices."""
+        return len(self._stack)
+
+    def __getitem__(self, index: int, /) -> HostArray:
+        """Return slice ``index`` as a finite FP32 (3, 512, 512) model input."""
+        prepared = np.empty((3, 512, 512), dtype=np.float32)
+        _prepare_frame(self._stack[index], out=prepared)
+        return prepared
 
 
 def prepare_medsam2_rgb_frame(rgb: HostArray) -> HostArray:
@@ -447,13 +475,18 @@ class Session[StateT]:
 def create_session[StateT](
     stack: HostArray, predictor: RunnerPredictor[StateT], runtime: MedSAM2RuntimeConfig
 ) -> Session[StateT]:
-    """Preprocess the stack and initialize the upstream-compatible predictor state."""
+    """Initialize the upstream-compatible predictor state over lazily preprocessed frames.
+
+    Frames are prepared on access from the uint8 stack, so the FP32 frame stack is never
+    materialized on the host or device and ``runtime.offload_video_to_cpu`` does not
+    apply; ``runtime.offload_state_to_cpu`` still selects where state tensors live.
+    """
 
     inference_state = predictor.init_state(
-        prepare_medsam2_images(stack),
+        _PreparedStack(stack),
         int(stack.shape[1]),
         int(stack.shape[2]),
-        offload_video_to_cpu=runtime.offload_video_to_cpu,
+        offload_video_to_cpu=True,
         offload_state_to_cpu=runtime.offload_state_to_cpu,
     )
     return Session(predictor=predictor, inference_state=inference_state, image_stack=stack)
