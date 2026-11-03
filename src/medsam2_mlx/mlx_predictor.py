@@ -176,6 +176,18 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
         inference_state["cached_features"][frame_idx] = backbone
         inference_state["prefetched_frame_idx"] = frame_idx
 
+    def _overlap_next_frame(
+        self, inference_state: SessionState, pending: list[array], frame_idx: int
+    ) -> None:
+        """Submit this frame's tracking, then prepare and encode the next frame.
+
+        Submitting first lets the GPU track this frame while the host reads and
+        normalizes the next one and builds its encoder graph.
+        """
+        mx = import_mlx()
+        mx.async_eval(*pending)
+        self._prefetch_image_feature(inference_state, frame_idx)
+
     def _store_tensor(self, inference_state: SessionState, value: Tensor) -> Tensor:
         """Offload state tensors to host memory when the session requests it."""
         if inference_state["offload_state_to_cpu"] and not isinstance(value, np.ndarray):
@@ -196,6 +208,7 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
         reverse: bool,
         run_mem_encoder: bool,
         prev_sam_mask_logits: array | None = None,
+        prefetch_frame_idx: int | None = None,
     ) -> tuple[FrameOutput, array]:
         """Evaluate a tracked frame and reject nonfinite masks, pointers or memory."""
         mx = import_mlx()
@@ -210,6 +223,7 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
             reverse,
             run_mem_encoder,
             prev_sam_mask_logits,
+            prefetch_frame_idx,
         )
         arrays = [pred_masks, compact["obj_ptr"], compact["object_score_logits"]]
         if compact["maskmem_features"] is not None:
