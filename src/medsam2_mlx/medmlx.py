@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
@@ -1017,7 +1018,11 @@ def run(
     mask_output = output / MASK_NAME
     overlay_output = output / OVERLAY_NAME
     _require_distinct_outputs((mask_output, overlay_output), (source_path,))
-    existing = [path.as_posix() for path in (mask_output, overlay_output) if path.exists()]
+    existing = [
+        path.as_posix()
+        for path in (mask_output, overlay_output)
+        if path.exists() or path.is_symlink()
+    ]
     if existing and not overwrite:
         raise InvalidInputError(
             f"MedSAM2 outputs already exist: {', '.join(existing)}; "
@@ -1161,12 +1166,12 @@ def run(
     labels = mask_volume.reshape(source.shape[::-1]).T
     image = cast(NiftiConstructor, source.__class__)(labels, None, header=source.header)
     image.set_data_dtype(np.uint16)
-    # Write beside the targets and rename once all are written, so a failed run keeps
-    # earlier outputs. The temporary names keep the suffixes the writers read.
-    staged = {mask_output: output / f".{os.getpid()}.{MASK_NAME}"}
-    if session.num_frames == 1:
-        staged[overlay_output] = output / f".{os.getpid()}.{OVERLAY_NAME}"
-    try:
+    # Keep staged outputs private because the image writers follow links when opening
+    # paths. Their filenames retain the suffixes required by the writers.
+    with TemporaryDirectory(prefix=".medsam2-", dir=output) as staging_dir:
+        staged = {mask_output: Path(staging_dir) / MASK_NAME}
+        if session.num_frames == 1:
+            staged[overlay_output] = Path(staging_dir) / OVERLAY_NAME
         nib.save(image, staged[mask_output])
         if overlay_output in staged:
             save_overlay(
@@ -1174,9 +1179,6 @@ def run(
             )
         for target, temporary in staged.items():
             os.replace(temporary, target)
-    finally:
-        for temporary in staged.values():
-            temporary.unlink(missing_ok=True)
     outputs = {"mask": mask_output.as_posix()}
     if overlay_output in staged:
         outputs["overlay"] = overlay_output.as_posix()
