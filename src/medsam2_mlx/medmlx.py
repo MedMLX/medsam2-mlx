@@ -321,17 +321,45 @@ def prepare_medsam2_images(stack: HostArray) -> HostArray:
     (``(x / 255 - mean) / std``) by table lookup. This is the pinned CT example's
     preprocessing, cast to FP32 for the native MLX graph.
     """
+    prepared = np.empty((len(stack), 3, 512, 512), dtype=np.float32)
+    for index, frame in enumerate(stack):
+        _prepare_frame(frame, out=prepared[index])
+    return prepared
+
+
+def _prepare_frame(frame: HostArray, *, out: HostArray) -> None:
+    """Write one uint8 ``(H, W)`` slice into ``out`` as in ``prepare_medsam2_images``."""
     from PIL import Image
 
-    prepared = np.empty((len(stack), 3, 512, 512), dtype=np.float32)
-    table = _normalization_table()
-    for index, frame in enumerate(stack):
-        image = Image.fromarray(frame.astype(np.uint8))
-        if image.size != (512, 512):
-            image = image.resize((512, 512), resample=Image.Resampling.BICUBIC)
-        # Uint8 indices are already in range; clip avoids take's exception buffer.
-        np.take(table, np.asarray(image), axis=1, out=prepared[index], mode="clip")
-    return prepared
+    image = Image.fromarray(frame.astype(np.uint8))
+    if image.size != (512, 512):
+        image = image.resize((512, 512), resample=Image.Resampling.BICUBIC)
+    # Uint8 indices are already in range; clip avoids take's exception buffer.
+    np.take(_normalization_table(), np.asarray(image), axis=1, out=out, mode="clip")
+
+
+class _PreparedStack:
+    """Lazy ``PreparedVideoFrames`` over a uint8 ``(D, H, W)`` stack.
+
+    Each access prepares one slice exactly as ``prepare_medsam2_images`` does, so a
+    session never holds the whole FP32 (D, 3, 512, 512) stack (4 bytes x 3 channels
+    per 512 x 512 voxel) and the predictor's next-frame prefetch overlaps this host
+    work with GPU tracking.
+    """
+
+    def __init__(self, stack: HostArray) -> None:
+        """Wrap the uint8 slice stack without copying it."""
+        self._stack = stack
+
+    def __len__(self) -> int:
+        """Return the number of slices."""
+        return len(self._stack)
+
+    def __getitem__(self, index: int, /) -> HostArray:
+        """Return slice ``index`` as a finite FP32 (3, 512, 512) model input."""
+        prepared = np.empty((3, 512, 512), dtype=np.float32)
+        _prepare_frame(self._stack[index], out=prepared)
+        return prepared
 
 
 def prepare_medsam2_rgb_frame(rgb: HostArray) -> HostArray:
@@ -431,29 +459,46 @@ class Session[StateT]:
         start_frame_idx: int | None = None,
         max_frame_num_to_track: int | None = None,
         reverse: bool = False,
+        stop_after_empty: int | None = None,
     ) -> list[MaskResult]:
-        """Propagate from the prompted frames and return every yielded frame's masks."""
-        return [
-            mask_result(frame_idx, obj_ids, cast(NumericArray, mask_logits))
-            for frame_idx, obj_ids, mask_logits in self.predictor.propagate_in_video(
-                self.inference_state,
-                start_frame_idx=start_frame_idx,
-                max_frame_num_to_track=max_frame_num_to_track,
-                reverse=reverse,
-            )
-        ]
+        """Propagate from the prompted frames and return every yielded frame's masks.
+
+        With ``stop_after_empty``, tracking stops once that many consecutive yielded
+        frames have no foreground for any object; those empty frames are returned and
+        later frames are never computed.
+        """
+        results: list[MaskResult] = []
+        empty_run = 0
+        frames = self.predictor.propagate_in_video(
+            self.inference_state,
+            start_frame_idx=start_frame_idx,
+            max_frame_num_to_track=max_frame_num_to_track,
+            reverse=reverse,
+        )
+        for frame_idx, obj_ids, mask_logits in frames:
+            result = mask_result(frame_idx, obj_ids, cast(NumericArray, mask_logits))
+            results.append(result)
+            empty_run = 0 if result.masks.any() else empty_run + 1
+            if stop_after_empty is not None and empty_run >= stop_after_empty:
+                break
+        return results
 
 
 def create_session[StateT](
     stack: HostArray, predictor: RunnerPredictor[StateT], runtime: MedSAM2RuntimeConfig
 ) -> Session[StateT]:
-    """Preprocess the stack and initialize the upstream-compatible predictor state."""
+    """Initialize the upstream-compatible predictor state over lazily preprocessed frames.
+
+    Frames are prepared on access from the uint8 stack, so the FP32 frame stack is never
+    materialized on the host or device and ``runtime.offload_video_to_cpu`` does not
+    apply; ``runtime.offload_state_to_cpu`` still selects where state tensors live.
+    """
 
     inference_state = predictor.init_state(
-        prepare_medsam2_images(stack),
+        _PreparedStack(stack),
         int(stack.shape[1]),
         int(stack.shape[2]),
-        offload_video_to_cpu=runtime.offload_video_to_cpu,
+        offload_video_to_cpu=True,
         offload_state_to_cpu=runtime.offload_state_to_cpu,
     )
     return Session(predictor=predictor, inference_state=inference_state, image_stack=stack)
@@ -469,6 +514,7 @@ def run_prompted_session[StateT](
     propagation: Literal["none", "forward", "reverse", "both"],
     max_frame_num_to_track: int | None,
     slice_range: tuple[int, int] | None,
+    stop_after_empty: int | None = None,
 ) -> HostArray:
     """Seed the prompts, propagate, and merge results into one uint16 label volume.
 
@@ -476,6 +522,7 @@ def run_prompted_session[StateT](
     prompt frame when propagation is enabled. With ``"none"``, prompts may target
     different frames. With ``"both"`` the session is reset and re-seeded between the
     two directions, so the reverse pass does not see forward-pass memories.
+    ``stop_after_empty`` ends each direction after that many consecutive empty frames.
     """
 
     mask_volume = np.zeros(session.image_stack.shape, dtype=np.uint16)
@@ -492,6 +539,7 @@ def run_prompted_session[StateT](
                     max_frame_num_to_track, slice_range, start_frame_idx, reverse=False
                 ),
                 reverse=False,
+                stop_after_empty=stop_after_empty,
             )
         )
     if propagation in {"reverse", "both"}:
@@ -506,6 +554,7 @@ def run_prompted_session[StateT](
                     max_frame_num_to_track, slice_range, start_frame_idx, reverse=True
                 ),
                 reverse=True,
+                stop_after_empty=stop_after_empty,
             )
         )
     for result in propagation_results:
@@ -902,6 +951,7 @@ def run(
     hu_window: Sequence[float] | None = None,
     propagation: Literal["none", "forward", "reverse", "both"] = "none",
     slice_range: Sequence[int] | None = None,
+    stop_after_empty: int | None = None,
     apply_postprocessing: bool = True,
     overwrite: bool = False,
 ) -> RunnerResult:
@@ -974,6 +1024,11 @@ def run(
         slice_range: Inclusive ``[start, end]`` slice indices; propagation stops at
             its ends and slices outside it stay empty. It must contain every
             prompt's frame.
+        stop_after_empty: Optional positive count. Each propagation direction stops
+            after this many consecutive slices in which no object has foreground, and
+            later slices in that direction stay empty. Omitted (default), propagation
+            covers the whole volume or ``slice_range`` as upstream does; an object that
+            reappears after such a gap is missed when this is set.
         apply_postprocessing: Upstream mask stability fallback, binarized click masks
             in memory, and filling of background components up to 8 pixels.
         overwrite: Replace existing outputs once the new ones are written; a failed run
@@ -1007,6 +1062,10 @@ def run(
             f"got {propagation!r}"
         )
     requested_range = _slice_range(slice_range)
+    if stop_after_empty is not None and _require_int("stop_after_empty", stop_after_empty) < 1:
+        raise InvalidInputError(
+            f"MedSAM2 stop_after_empty must be a positive integer, got {stop_after_empty!r}"
+        )
     window = _hu_window(hu_window)
 
     source_path = Path(image_path).expanduser().resolve()
@@ -1155,6 +1214,7 @@ def run(
             propagation=propagation,
             max_frame_num_to_track=None,
             slice_range=requested_range,
+            stop_after_empty=stop_after_empty,
         )
     except MedmlxError:
         raise
@@ -1198,6 +1258,7 @@ def run(
             "hu_window": None if window is None else list(window),
             "propagation": propagation,
             "slice_range": None if requested_range is None else list(requested_range),
+            "stop_after_empty": stop_after_empty,
             "postprocessing_applied": apply_postprocessing,
             "coordinate_space": "image_voxel",
             "output_shape": [int(value) for value in labels.shape],

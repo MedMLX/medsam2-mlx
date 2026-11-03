@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import platform
+from functools import cache
 from importlib import import_module
 from types import ModuleType
 from typing import TYPE_CHECKING, cast
@@ -23,10 +24,22 @@ _METAL_HINT = "Run medsam2-mlx on macOS arm64 with MLX installed and Metal avail
 def import_mlx() -> CoreRuntime:
     """Return the MLX core module after admitting macOS arm64 with an available Metal GPU.
 
+    The host admission runs once per process; it spawns ``sysctl`` subprocesses and the
+    predictor calls this several times per tracked frame. Later calls only reselect
+    the GPU as the default device, as the first admission does.
+
     Raises:
         MissingDependencyError: The host is not macOS arm64, MLX cannot be imported, or
             Metal is unavailable. There is no CPU fallback.
     """
+    mx = _admit_mlx()
+    mx.set_default_device(mx.gpu)
+    return mx
+
+
+@cache
+def _admit_mlx() -> CoreRuntime:
+    """Admit the host and import MLX; failures raise and are not cached."""
     host = (platform.system(), platform.machine())
     if host != ("Darwin", "arm64"):
         raise MissingDependencyError(

@@ -7,7 +7,7 @@ Torch implementation. The recorder is never imported by tests.
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import cast
 
@@ -24,6 +24,7 @@ from medsam2_mlx._types import (
     NumericArray,
     PromptedRunArguments,
     RunnerArguments,
+    RunnerPredictor,
     RunnerResult,
 )
 from tests.reference_cases import REFERENCE_PLATFORM, UPSTREAM_REVISION
@@ -226,7 +227,15 @@ def test_mismatched_weights_raise_asset_not_ready(tmp_path: Path, weights: str) 
 
 
 @pytest.mark.parametrize(
-    "problem", ["bad-suffix", "out-of-range", "non-bool", "existing-output", "dangling-output"]
+    "problem",
+    [
+        "bad-suffix",
+        "out-of-range",
+        "non-bool",
+        "zero-stop",
+        "existing-output",
+        "dangling-output",
+    ],
 )
 def test_invalid_arguments_are_rejected_before_downloading_weights(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, problem: str
@@ -251,6 +260,8 @@ def test_invalid_arguments_are_rejected_before_downloading_weights(
         arguments["frame_idx"] = 1
     elif problem == "non-bool":
         arguments["overwrite"] = "yes"
+    elif problem == "zero-stop":
+        arguments["stop_after_empty"] = 0
     else:
         output.mkdir()
         mask_path = output / medmlx.MASK_NAME
@@ -260,3 +271,40 @@ def test_invalid_arguments_are_rejected_before_downloading_weights(
             mask_path.write_bytes(b"previous")
     with pytest.raises(InvalidInputError):
         medmlx.run(**cast(RunnerArguments, arguments))
+
+
+class _ScriptedPredictor:
+    """Yields one-object masks whose foreground follows ``occupied``; counts frames produced."""
+
+    def __init__(self, occupied: Sequence[bool]) -> None:
+        """Store the per-frame foreground pattern."""
+        self.occupied = occupied
+        self.produced = 0
+
+    def propagate_in_video(
+        self,
+        inference_state: None,
+        start_frame_idx: int | None = None,
+        max_frame_num_to_track: int | None = None,
+        reverse: bool = False,
+    ) -> Iterator[tuple[int, list[int], HostArray]]:
+        """Yield ``(frame, ids, logits)`` lazily, as the predictor's generator does."""
+        for index, present in enumerate(self.occupied):
+            self.produced += 1
+            yield index, [1], np.full((1, 1, 2, 2), 1.0 if present else -1.0, np.float32)
+
+
+@pytest.mark.parametrize(("stop", "produced"), [(None, 8), (2, 6), (3, 8)])
+def test_stop_after_empty_ends_tracking_after_consecutive_empty_frames(
+    stop: int | None, produced: int
+) -> None:
+    """Tracking stops after ``stop`` consecutive empty frames and computes no later frames."""
+    predictor = _ScriptedPredictor([True, True, False, True, False, False, True, True])
+    session = medmlx.Session(
+        predictor=cast("RunnerPredictor[None]", predictor),
+        inference_state=None,
+        image_stack=np.zeros((8, 2, 2), np.uint8),
+    )
+    results = session.propagate(stop_after_empty=stop)
+    assert predictor.produced == produced
+    assert [result.frame_idx for result in results] == list(range(produced))

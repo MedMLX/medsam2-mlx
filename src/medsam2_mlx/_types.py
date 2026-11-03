@@ -12,7 +12,14 @@ import numpy.typing as npt
 from medmlx_core.typing import MetalKernel
 
 if TYPE_CHECKING:
-    from mlx.core import Device, Dtype, StreamOrDevice, array
+    from mlx.core import (
+        Device,
+        Dtype,
+        StreamContext,
+        StreamOrDevice,
+        ThreadLocalStream,
+        array,
+    )
 
     from medsam2_mlx.mlx_predictor import PreparedVideoFrames
 
@@ -109,6 +116,12 @@ class CoreRuntime(Protocol):
         """Return the current default MLX device."""
         ...
 
+    @staticmethod
+    def set_default_device(device: Device) -> None:
+        """Select the process-wide default MLX device."""
+        ...
+
+    gpu: Device
     array: ArrayConstructor
     float16: Dtype
     float32: Dtype
@@ -128,6 +141,21 @@ class CoreRuntime(Protocol):
     @staticmethod
     def eval(*args: object) -> None:
         """Evaluate the supplied lazy MLX values."""
+        ...
+
+    @staticmethod
+    def async_eval(*args: object) -> None:
+        """Start evaluating the supplied lazy MLX values without waiting."""
+        ...
+
+    @staticmethod
+    def new_thread_local_stream(device: Device) -> ThreadLocalStream:
+        """Create a stream on ``device`` that is distinct in every thread."""
+        ...
+
+    @staticmethod
+    def stream(s: ThreadLocalStream) -> StreamContext:
+        """Make ``s`` the default stream inside a ``with`` block."""
         ...
 
     @staticmethod
@@ -514,6 +542,7 @@ class SessionState(TypedDict):
     tracking_has_started: bool
     frames_already_tracked: dict[int, FrameTracking]
     keep_image_features: NotRequired[bool]
+    prefetched_frame_idx: NotRequired[int]
 
 
 class ConnectedComponents(Protocol):
@@ -535,7 +564,7 @@ class RunnerPredictor[StateT](Protocol):
 
     def init_state(
         self,
-        images: HostArray,
+        images: HostArray | PreparedVideoFrames,
         height: int,
         width: int,
         *,
@@ -655,6 +684,7 @@ class RunnerArguments(TypedDict, total=False):
     hu_window: Sequence[float] | None
     propagation: Propagation
     slice_range: Sequence[int] | None
+    stop_after_empty: int | None
     apply_postprocessing: bool
     overwrite: bool
 
@@ -681,6 +711,7 @@ class RunnerDetails(TypedDict):
     hu_window: list[float] | None
     propagation: Propagation
     slice_range: list[int] | None
+    stop_after_empty: int | None
     postprocessing_applied: bool
     coordinate_space: Literal["image_voxel"]
     output_shape: list[int]
@@ -735,3 +766,4 @@ class PromptedRunArguments(TypedDict):
     prompts: NotRequired[Sequence[Mapping[str, object]] | None]
     hu_window: NotRequired[Sequence[float] | None]
     slice_range: NotRequired[Sequence[int] | None]
+    stop_after_empty: NotRequired[int | None]
