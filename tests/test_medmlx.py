@@ -6,6 +6,7 @@ Torch implementation. The recorder is never imported by tests.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
@@ -172,6 +173,32 @@ def test_run_with_seeded_network_matches_upstream(
         assert np.array_equal(logits[0] > 0, scores > 0)
 
 
+def test_runner_does_not_follow_staging_symlinks(tmp_path: Path, seeded_weights: Path) -> None:
+    """Existing links in the output folder cannot redirect mask or overlay writes."""
+    run = FAKE_RUNS["slice2d"]
+    volume, mask = prepare_inputs(tmp_path / "inputs", run)
+    output = tmp_path / "out"
+    output.mkdir()
+    mask_victim = tmp_path / "mask-victim.txt"
+    overlay_victim = tmp_path / "overlay-victim.txt"
+    mask_victim.write_text("keep mask", encoding="utf-8")
+    overlay_victim.write_text("keep overlay", encoding="utf-8")
+    (output / f".{os.getpid()}.{medmlx.MASK_NAME}").symlink_to(mask_victim)
+    (output / f".{os.getpid()}.{medmlx.OVERLAY_NAME}").symlink_to(overlay_victim)
+
+    result = medmlx.run(
+        **_arguments(run, volume, mask),
+        weights_path=seeded_weights,
+        output_dir=output,
+    )
+
+    assert mask_victim.read_bytes() == b"keep mask"
+    assert overlay_victim.read_bytes() == b"keep overlay"
+    assert nib.load(result["outputs"]["mask"]).shape == nib.load(volume).shape
+    with Image.open(result["outputs"]["overlay"]) as overlay:
+        overlay.verify()
+
+
 @pytest.mark.parametrize(
     "weights",
     [
@@ -199,7 +226,7 @@ def test_mismatched_weights_raise_asset_not_ready(tmp_path: Path, weights: str) 
 
 
 @pytest.mark.parametrize(
-    "problem", ["bad-suffix", "out-of-range", "non-bool", "existing-output"]
+    "problem", ["bad-suffix", "out-of-range", "non-bool", "existing-output", "dangling-output"]
 )
 def test_invalid_arguments_are_rejected_before_downloading_weights(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, problem: str
@@ -226,6 +253,10 @@ def test_invalid_arguments_are_rejected_before_downloading_weights(
         arguments["overwrite"] = "yes"
     else:
         output.mkdir()
-        (output / medmlx.MASK_NAME).write_bytes(b"previous")
+        mask_path = output / medmlx.MASK_NAME
+        if problem == "dangling-output":
+            mask_path.symlink_to(tmp_path / "missing.nii.gz")
+        else:
+            mask_path.write_bytes(b"previous")
     with pytest.raises(InvalidInputError):
         medmlx.run(**cast(RunnerArguments, arguments))
