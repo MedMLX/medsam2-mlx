@@ -951,7 +951,7 @@ def run(
     hu_window: Sequence[float] | None = None,
     propagation: Literal["none", "forward", "reverse", "both"] = "none",
     slice_range: Sequence[int] | None = None,
-    stop_after_empty: int | None = None,
+    stop_after_empty: int | None = 8,
     apply_postprocessing: bool = True,
     overwrite: bool = False,
 ) -> RunnerResult:
@@ -1024,11 +1024,13 @@ def run(
         slice_range: Inclusive ``[start, end]`` slice indices; propagation stops at
             its ends and slices outside it stay empty. It must contain every
             prompt's frame.
-        stop_after_empty: Optional positive count. Each propagation direction stops
-            after this many consecutive slices in which no object has foreground, and
-            later slices in that direction stay empty. Omitted (default), propagation
-            covers the whole volume or ``slice_range`` as upstream does; an object that
-            reappears after such a gap is missed when this is set.
+        stop_after_empty: Positive count, 8 by default. Each propagation direction
+            stops after this many consecutive slices in which no object has foreground,
+            and later slices in that direction stay empty. This departs from upstream,
+            which tracks to the end of the volume; in testing, the output dropped this
+            way lay outside the prompted structure, where the tracker had moved to a
+            different one. An object that genuinely reappears after the gap is missed.
+            ``None`` tracks the whole volume or ``slice_range`` as upstream does.
         apply_postprocessing: Upstream mask stability fallback, binarized click masks
             in memory, and filling of background components up to 8 pixels.
         overwrite: Replace existing outputs once the new ones are written; a failed run
