@@ -80,7 +80,7 @@ for a folder without a MedMLX download record.
 | `hu_window` | Optional `(lower, upper)` clip before min-max scaling to uint8 |
 | `propagation` | `"none"` (default), `"forward"`, `"reverse"` or `"both"` |
 | `slice_range` | Optional inclusive `[start, end]` that contains every prompt's slice |
-| `stop_after_empty` | Optional count: stop each propagation direction after that many consecutive slices with no foreground; omitted, propagation covers the whole volume as upstream does |
+| `stop_after_empty` | `8` by default: stop each propagation direction after that many consecutive slices with no foreground; `None` tracks the whole volume as upstream does |
 | `apply_postprocessing` | `True` by default: upstream stability fallback, binarized click memory and hole filling |
 | `overwrite` | `False` by default; existing outputs are never replaced |
 
