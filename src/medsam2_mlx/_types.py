@@ -112,11 +112,6 @@ class CoreRuntime(Protocol):
     __version__: str
 
     @staticmethod
-    def default_device() -> Device:
-        """Return the current default MLX device."""
-        ...
-
-    @staticmethod
     def set_default_device(device: Device) -> None:
         """Select the process-wide default MLX device."""
         ...
@@ -729,23 +724,6 @@ class VideoResolutionOutput(MemoryEntry):
     pred_masks_video_res: Tensor
     obj_ptr: array
     object_score_logits: array
-
-
-class PromptArguments(TypedDict, total=False):
-    box_xyxy: BoxCoordinates | None
-    points_xy: tuple[tuple[float, float], ...]
-    point_labels: tuple[int, ...]
-    mask: HostArray | None
-    frame_idx: int
-    obj_id: int
-    clear_old_points: bool
-    normalize_coords: bool
-
-
-class SessionOptions(TypedDict, total=False):
-    offload_video_to_cpu: bool
-    offload_state_to_cpu: bool
-    async_loading_frames: bool
 
 
 class HeadArguments(TypedDict, total=False):

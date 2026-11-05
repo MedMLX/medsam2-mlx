@@ -45,12 +45,6 @@ class RunnerCase(TypedDict):
     extra_objects: NotRequired[tuple[ExtraObjectCase, ...]]
 
 
-class BoxCase(TypedDict):
-    """Runner case narrowed to a required box prompt."""
-
-    box: tuple[float, float, float, float]
-
-
 WEIGHT_SEED = 2026
 
 

@@ -1,40 +1,26 @@
-"""Pinned upstream source admission, the seeded reference graph and CPU support.
+"""Pinned upstream source admission and the seeded reference graph for parity tests.
 
-Nothing here records fixtures; the recorders in scripts/ and the parity tests share it.
+Nothing here records fixtures.
 """
 
 from __future__ import annotations
 
 import json
-import platform
 import subprocess
 import sys
 from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
-
-import numpy.typing as npt
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from torch import Tensor
 
-import numpy as np
-
-from tests.reference_cases import MODEL_SEED, REFERENCE_PLATFORM, SMALL, UPSTREAM_REVISION
+from tests.reference_cases import MODEL_SEED, SMALL, UPSTREAM_REVISION
 from tests.reference_types import (
-    DecoderExtras,
-    MiscModule,
     SourceModules,
     SourcePredictor,
     TorchRuntime,
 )
-
-
-def recording_platform() -> str:
-    """Admit reference generation only on this package's supported host."""
-    if (platform.system(), platform.machine()) != ("Darwin", "arm64"):
-        raise ValueError("Record MedSAM2 references on macOS arm64")
-    return REFERENCE_PLATFORM
 
 
 def import_upstream(source: Path) -> SourceModules:
@@ -54,7 +40,6 @@ def import_upstream(source: Path) -> SourceModules:
         "transformer": "sam2.modeling.sam.transformer",
         "mask_decoder": "sam2.modeling.sam.mask_decoder",
         "predictor": "sam2.sam2_video_predictor_npz",
-        "misc": "sam2.utils.misc",
     }
     modules = {key: import_module(name) for key, name in names.items()}
     for module in modules.values():
@@ -82,44 +67,7 @@ def verify_upstream(source: Path) -> None:
         raise ValueError(f"Expected MedSAM2 at {UPSTREAM_REVISION}, found {revision!r}")
 
 
-def install_cpu_components(misc: MiscModule, torch: TorchRuntime) -> None:
-    """Replace upstream's connected-components kernel (unavailable on macOS) with OpenCV.
-
-    Labels 8-connected components of a (B, 1, H, W) mask and returns per-pixel component
-    labels and areas, the two tensors upstream's hole filling consumes.
-    """
-    cv2 = cast(CVRuntime, import_module("cv2"))
-
-    def cpu_components(mask: Tensor) -> tuple[Tensor, Tensor]:
-        """Replace unavailable source connected components with the CPU oracle."""
-        labels = np.zeros(mask.shape, dtype=np.int32)
-        areas = np.zeros(mask.shape, dtype=np.int32)
-        for index in range(mask.shape[0]):
-            _, component, stats, _ = cv2.connectedComponentsWithStats(
-                mask[index, 0].cpu().numpy().astype(np.uint8), connectivity=8
-            )
-            labels[index, 0] = component
-            areas[index, 0] = stats[component, cv2.CC_STAT_AREA]
-        return torch.from_numpy(labels), torch.from_numpy(areas)
-
-    misc.get_connected_components = cpu_components
-
-
-class CVRuntime(Protocol):
-    """OpenCV surface used for the CPU connected-components oracle."""
-
-    CC_STAT_AREA: int
-
-    def connectedComponentsWithStats(
-        self, image: npt.NDArray[np.uint8], *, connectivity: int = 8
-    ) -> tuple[int, npt.NDArray[np.int32], npt.NDArray[np.int32], npt.NDArray[np.float64]]:
-        """Label connected components and return component statistics."""
-        ...
-
-
-def build_reference(
-    up: SourceModules, torch: TorchRuntime, *, postprocessing: bool
-) -> SourcePredictor:
+def build_reference(up: SourceModules) -> SourcePredictor:
     """SAM2VideoPredictorNPZ with the SMALL graph, mirroring sam2.1_hiera_t512.yaml."""
     d = SMALL["d_model"]
     sine = up["position_encoding"].PositionEmbeddingSine
@@ -187,17 +135,8 @@ def build_reference(
         ),
         in_dim=d,
     )
-    extra: DecoderExtras = (
-        {
-            "dynamic_multimask_via_stability": True,
-            "dynamic_multimask_stability_delta": 0.05,
-            "dynamic_multimask_stability_thresh": 0.98,
-        }
-        if postprocessing
-        else {}
-    )
     model = up["predictor"].SAM2VideoPredictorNPZ(
-        fill_hole_area=8 if postprocessing else 0,
+        fill_hole_area=0,
         image_encoder=image_encoder,
         memory_attention=memory_attention,
         memory_encoder=memory_encoder,
@@ -205,7 +144,7 @@ def build_reference(
         image_size=SMALL["image_size"],
         sigmoid_scale_for_mem_enc=20.0,
         sigmoid_bias_for_mem_enc=-10.0,
-        binarize_mask_from_pts_for_mem_enc=postprocessing,
+        binarize_mask_from_pts_for_mem_enc=False,
         use_mask_input_as_output_without_sam=True,
         directly_add_no_mem_embed=True,
         no_obj_embed_spatial=True,
@@ -226,7 +165,7 @@ def build_reference(
         multimask_max_pt_num=1,
         use_mlp_for_obj_ptr_proj=True,
         max_obj_ptrs_in_encoder=SMALL["max_obj_ptrs_in_encoder"],
-        sam_mask_decoder_extra_args=extra,
+        sam_mask_decoder_extra_args={},
     )
     # SAM2Base hard-codes a 2048-wide decoder MLP and a 256-wide IoU head. Keep the
     # fixture small with the same MaskDecoder class and options at reduced widths.
@@ -243,7 +182,6 @@ def build_reference(
         pred_obj_scores=True,
         pred_obj_scores_mlp=True,
         use_multimask_token_for_obj_ptr=True,
-        **extra,
     )
     return model
 
@@ -251,7 +189,7 @@ def build_reference(
 def seeded_state(up: SourceModules, torch: TorchRuntime) -> dict[str, Tensor]:
     """Seeded weights, rounded to FP16-representable FP32 so the fixture stores FP16."""
     torch.manual_seed(MODEL_SEED)
-    model = build_reference(up, torch, postprocessing=False)
+    model = build_reference(up)
     generator = torch.Generator().manual_seed(MODEL_SEED)
     state: dict[str, Tensor] = {}
     for name, value in model.state_dict().items():

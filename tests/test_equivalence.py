@@ -1,8 +1,7 @@
 """Seeded small-graph equivalence with the PyTorch MedSAM2 reference recording.
 
-Every expected array was recorded from upstream PyTorch MedSAM2 @ 332f30d by
-scripts/make_reference_fixtures.py; module inputs come from the same recording,
-so each module is compared in isolation.
+Every expected array was recorded from upstream PyTorch MedSAM2 @ 332f30d; module
+inputs come from the same recording, so each module is compared in isolation.
 """
 
 from __future__ import annotations

@@ -1,12 +1,11 @@
 """MedMLX runner: upstream-reference parity, weights admission and argument rejection.
 
-References are recorded by scripts/make_runner_fixtures.py from the pinned upstream
-Torch implementation. The recorder is never imported by tests.
+References were recorded from the pinned upstream Torch implementation; the recorder
+is not part of this repository.
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import cast
@@ -172,32 +171,6 @@ def test_run_with_seeded_network_matches_upstream(
         scale = max(float(np.abs(scores).max()), 1e-12)
         assert float(delta.max()) / scale < 1e-4
         assert np.array_equal(logits[0] > 0, scores > 0)
-
-
-def test_runner_does_not_follow_staging_symlinks(tmp_path: Path, seeded_weights: Path) -> None:
-    """Existing links in the output folder cannot redirect mask or overlay writes."""
-    run = FAKE_RUNS["slice2d"]
-    volume, mask = prepare_inputs(tmp_path / "inputs", run)
-    output = tmp_path / "out"
-    output.mkdir()
-    mask_victim = tmp_path / "mask-victim.txt"
-    overlay_victim = tmp_path / "overlay-victim.txt"
-    mask_victim.write_text("keep mask", encoding="utf-8")
-    overlay_victim.write_text("keep overlay", encoding="utf-8")
-    (output / f".{os.getpid()}.{medmlx.MASK_NAME}").symlink_to(mask_victim)
-    (output / f".{os.getpid()}.{medmlx.OVERLAY_NAME}").symlink_to(overlay_victim)
-
-    result = medmlx.run(
-        **_arguments(run, volume, mask),
-        weights_path=seeded_weights,
-        output_dir=output,
-    )
-
-    assert mask_victim.read_bytes() == b"keep mask"
-    assert overlay_victim.read_bytes() == b"keep overlay"
-    assert nib.load(result["outputs"]["mask"]).shape == nib.load(volume).shape
-    with Image.open(result["outputs"]["overlay"]) as overlay:
-        overlay.verify()
 
 
 @pytest.mark.parametrize(

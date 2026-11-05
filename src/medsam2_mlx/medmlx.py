@@ -362,17 +362,6 @@ class _PreparedStack:
         return prepared
 
 
-def prepare_medsam2_rgb_frame(rgb: HostArray) -> HostArray:
-    """One uint8 ``(H, W, 3)`` frame as float32 ImageNet-normalized CHW, 512 pixels."""
-    from PIL import Image
-
-    image = Image.fromarray(rgb)
-    if image.size != (512, 512):
-        image = image.resize((512, 512), resample=Image.Resampling.BICUBIC)
-    channels = np.arange(3)[:, None, None]
-    return _normalization_table()[channels, np.asarray(image).transpose(2, 0, 1)]
-
-
 # --- Prompts and sessions ------------------------------------------------------------
 
 
@@ -1049,7 +1038,7 @@ def run(
             existing outputs without ``overwrite``.
         AssetNotReadyError: Missing, unconverted, or mismatched weights.
         MissingDependencyError: MLX or nibabel is unavailable.
-        ModelExecutionError: The model failed during the run.
+        ModelExecutionError: MLX raised a runtime or value error during the run.
 
     Box ordering and coordinate bounds are caller responsibilities: the runner checks
     coordinate shapes and finiteness but does not clip coordinates to the image.
@@ -1220,7 +1209,9 @@ def run(
         )
     except MedmlxError:
         raise
-    except Exception as error:
+    # MLX reports device and graph failures as RuntimeError or ValueError; other
+    # exception types are defects and propagate unchanged.
+    except (RuntimeError, ValueError) as error:
         raise ModelExecutionError(f"medsam2 failed during execution: {error}") from error
 
     nib = _nibabel()

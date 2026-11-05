@@ -11,10 +11,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
-if TYPE_CHECKING:
-    from mlx.nn import Module
 from medmlx_core.errors import InvalidInputError
 
 from medsam2_mlx._runtime import import_mlx
@@ -23,10 +21,12 @@ from medsam2_mlx.config import SAM2_1_HIERA_T512, Sam2Config
 from medsam2_mlx.mlx_model import create_model
 from medsam2_mlx.sam2_base import MedSAM2Model
 
-__all__ = ["check_parameter_names_and_shapes", "load_model"]
+__all__ = ["load_model"]
 
 
-def check_parameter_names_and_shapes(shapes: Mapping[str, tuple[int, ...]], model: Module) -> None:
+def _check_parameter_names_and_shapes(
+    shapes: Mapping[str, tuple[int, ...]], model: MedSAM2Model
+) -> None:
     """Require exactly the model's parameter names, each with the model's shape."""
     from mlx.utils import tree_flatten
 
@@ -75,7 +75,7 @@ def load_model(
     weights = {name: mx.array(array) for name, array in weights.items()}
     if any(array.dtype != mx.float32 for array in weights.values()):
         raise InvalidInputError("MedSAM2 MLX weights must be FP32")
-    check_parameter_names_and_shapes(
+    _check_parameter_names_and_shapes(
         {name: tuple(array.shape) for name, array in weights.items()}, model
     )
     # One combined flag reads every tensor with a single host synchronization.
