@@ -78,7 +78,9 @@ def load_model(
     check_parameter_names_and_shapes(
         {name: tuple(array.shape) for name, array in weights.items()}, model
     )
-    if not all(bool(mx.all(mx.isfinite(array)).item()) for array in weights.values()):
+    # One combined flag reads every tensor with a single host synchronization.
+    finite = mx.all(mx.stack([mx.all(mx.isfinite(array)) for array in weights.values()]))
+    if not finite.item():
         raise InvalidInputError("MedSAM2 MLX weights contain nonfinite values")
     model.load_weights(list(weights.items()), strict=True)
     mx.eval(model.parameters())
