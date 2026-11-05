@@ -9,7 +9,7 @@ NPZ and frame-folder inputs use a synthetic grid.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -245,7 +245,7 @@ def _placeholder_source(
     """
 
     nib = _nibabel()
-    affine = np.eye(4) if spacing is None else np.diag([*spacing, 1.0])
+    affine = np.eye(4, dtype=np.float64) if spacing is None else np.diag([*spacing, 1.0])
     return nib.Nifti1Image(stack.T, affine)
 
 
@@ -456,21 +456,43 @@ class Session[StateT]:
         frames have no foreground for any object; those empty frames are returned and
         later frames are never computed.
         """
-        results: list[MaskResult] = []
-        empty_run = 0
-        frames = self.predictor.propagate_in_video(
-            self.inference_state,
-            start_frame_idx=start_frame_idx,
-            max_frame_num_to_track=max_frame_num_to_track,
-            reverse=reverse,
+        return list(
+            _iter_propagation(
+                self,
+                start_frame_idx=start_frame_idx,
+                max_frame_num_to_track=max_frame_num_to_track,
+                reverse=reverse,
+                stop_after_empty=stop_after_empty,
+            )
         )
-        for frame_idx, obj_ids, mask_logits in frames:
-            result = mask_result(frame_idx, obj_ids, cast(NumericArray, mask_logits))
-            results.append(result)
-            empty_run = 0 if result.masks.any() else empty_run + 1
-            if stop_after_empty is not None and empty_run >= stop_after_empty:
-                break
-        return results
+
+
+def _iter_propagation[StateT](
+    session: Session[StateT],
+    *,
+    start_frame_idx: int | None,
+    max_frame_num_to_track: int | None,
+    reverse: bool,
+    stop_after_empty: int | None,
+) -> Iterator[MaskResult]:
+    """Yield completed host masks without retaining a direction's results.
+
+    Network execution and temporal state stay with the predictor. Thresholding,
+    empty-frame counting and label assembly remain NumPy CPU postprocessing.
+    """
+    empty_run = 0
+    frames = session.predictor.propagate_in_video(
+        session.inference_state,
+        start_frame_idx=start_frame_idx,
+        max_frame_num_to_track=max_frame_num_to_track,
+        reverse=reverse,
+    )
+    for frame_idx, obj_ids, mask_logits in frames:
+        result = mask_result(frame_idx, obj_ids, cast(NumericArray, mask_logits))
+        empty_run = 0 if result.masks.any() else empty_run + 1
+        yield result
+        if stop_after_empty is not None and empty_run >= stop_after_empty:
+            break
 
 
 def create_session[StateT](
@@ -515,39 +537,35 @@ def run_prompted_session[StateT](
     """
 
     mask_volume = np.zeros(session.image_stack.shape, dtype=np.uint16)
-    seed_results = [session.add_prompt(prompt) for prompt in prompt_tuple]
-    for result in seed_results:
-        merge_result(mask_volume, result, slice_range=slice_range)
-    propagation_results: list[MaskResult] = []
+    for prompt in prompt_tuple:
+        merge_result(mask_volume, session.add_prompt(prompt), slice_range=slice_range)
     start_frame_idx = prompt_tuple[0].frame_idx
     if propagation in {"forward", "both"}:
-        propagation_results.extend(
-            session.propagate(
-                start_frame_idx=start_frame_idx,
-                max_frame_num_to_track=direction_limit(
-                    max_frame_num_to_track, slice_range, start_frame_idx, reverse=False
-                ),
-                reverse=False,
-                stop_after_empty=stop_after_empty,
-            )
-        )
+        for result in _iter_propagation(
+            session,
+            start_frame_idx=start_frame_idx,
+            max_frame_num_to_track=direction_limit(
+                max_frame_num_to_track, slice_range, start_frame_idx, reverse=False
+            ),
+            reverse=False,
+            stop_after_empty=stop_after_empty,
+        ):
+            merge_result(mask_volume, result, slice_range=slice_range)
     if propagation in {"reverse", "both"}:
         if propagation == "both":
             session.predictor.reset_state(session.inference_state)
             for prompt in prompt_tuple:
                 session.add_prompt(prompt)
-        propagation_results.extend(
-            session.propagate(
-                start_frame_idx=start_frame_idx,
-                max_frame_num_to_track=direction_limit(
-                    max_frame_num_to_track, slice_range, start_frame_idx, reverse=True
-                ),
-                reverse=True,
-                stop_after_empty=stop_after_empty,
-            )
-        )
-    for result in propagation_results:
-        merge_result(mask_volume, result, slice_range=slice_range)
+        for result in _iter_propagation(
+            session,
+            start_frame_idx=start_frame_idx,
+            max_frame_num_to_track=direction_limit(
+                max_frame_num_to_track, slice_range, start_frame_idx, reverse=True
+            ),
+            reverse=True,
+            stop_after_empty=stop_after_empty,
+        ):
+            merge_result(mask_volume, result, slice_range=slice_range)
     return mask_volume
 
 
@@ -680,7 +698,7 @@ def save_overlay(
 
     base = np.asarray(image.convert("RGB")).astype(np.float32)
     overlay = base.copy()
-    overlay[mask] = overlay[mask] * 0.5 + np.asarray([251.0, 252.0, 30.0]) * 0.5
+    overlay[mask] = overlay[mask] * 0.5 + np.asarray([251.0, 252.0, 30.0], dtype=np.float64) * 0.5
     output = Image.fromarray(np.clip(overlay, 0, 255).astype(np.uint8))
     if any(prompt.points_xy for prompt in prompts):
         from PIL import ImageDraw
