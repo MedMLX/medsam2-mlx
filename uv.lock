@@ -221,7 +221,7 @@ wheels = [
 
 [[package]]
 name = "medsam2-mlx"
-version = "0.2.8"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "medmlx-core" },
@@ -254,7 +254,7 @@ reference = [
 requires-dist = [
     { name = "hydra-core", marker = "extra == 'reference'", specifier = ">=1.3.8,<1.4" },
     { name = "iopath", marker = "extra == 'reference'", specifier = ">=0.1.10,<0.2" },
-    { name = "medmlx-core", specifier = "==0.2.6" },
+    { name = "medmlx-core", specifier = ">=0.2.6,<0.3" },
     { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==0.32.4" },
     { name = "nibabel", specifier = ">=5.3,<6" },
     { name = "numpy", specifier = ">=2.0,<3" },

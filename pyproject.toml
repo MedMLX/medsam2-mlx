@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "medsam2-mlx"
-version = "0.2.8"
+version = "0.3.0"
 description = "Segment lesions or organs from a box, point or mask prompt, then track them through a volume with MedSAM2"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -39,7 +39,7 @@ keywords = [
 ]
 dependencies = [
   "mlx==0.32.4; platform_system == 'Darwin' and platform_machine == 'arm64'",
-  "medmlx-core==0.2.6",
+  "medmlx-core>=0.2.6,<0.3",
   "nibabel>=5.3,<6",
   "numpy>=2.0,<3",
   "pillow>=13,<14",
@@ -51,7 +51,7 @@ medsam2 = "medsam2_mlx.medmlx:MODEL"
 
 [project.urls]
 Homepage = "https://medmlx.org"
-Documentation = "https://github.com/MedMLX/medsam2-mlx/blob/v0.2.8/README.md"
+Documentation = "https://github.com/MedMLX/medsam2-mlx/blob/v0.3.0/README.md"
 Repository = "https://github.com/MedMLX/medsam2-mlx"
 Issues = "https://github.com/MedMLX/medsam2-mlx/issues"
 Weights = "https://huggingface.co/MedMLX/medsam2-mlx"

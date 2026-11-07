@@ -6,14 +6,14 @@ Segment lesions or organs from a box, point or mask prompt, then track them thro
 
 [![PyPI](https://img.shields.io/pypi/v/medsam2-mlx)](https://pypi.org/project/medsam2-mlx/)
 [![Python](https://img.shields.io/pypi/pyversions/medsam2-mlx)](https://pypi.org/project/medsam2-mlx/)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](https://github.com/MedMLX/medsam2-mlx/blob/v0.2.8/LICENSE)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](https://github.com/MedMLX/medsam2-mlx/blob/v0.3.0/LICENSE)
 [![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-MLX-black?logo=apple)](https://github.com/ml-explore/mlx)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97_Hugging_Face-weights-yellow)](https://huggingface.co/MedMLX/medsam2-ct-lesion-mlx)
 [![MedMLX](https://img.shields.io/badge/MedMLX-runtime-A51C30)](https://github.com/MedMLX/medmlx)
 
 [Model weights](https://huggingface.co/MedMLX/medsam2-ct-lesion-mlx) · [MedMLX](https://github.com/MedMLX/medmlx)
 
-<img src="https://raw.githubusercontent.com/MedMLX/medsam2-mlx/v0.2.8/docs/showcase.png" alt="MedSAM2 masks propagated through a scan from one slice prompt" width="100%">
+<img src="https://raw.githubusercontent.com/MedMLX/medsam2-mlx/v0.3.0/docs/showcase.png" alt="MedSAM2 masks propagated through a scan from one slice prompt" width="100%">
 
 </div>
 
@@ -43,7 +43,7 @@ For Codex, use `codex mcp add medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-wor
 ```bash
 uv venv --python 3.13
 source .venv/bin/activate
-uv pip install "medsam2-mlx>=0.2.8"
+uv pip install "medsam2-mlx>=0.3.0"
 ```
 
 ## Run
@@ -136,6 +136,6 @@ fallback.
 
 ## License
 
-[Apache-2.0](https://github.com/MedMLX/medsam2-mlx/blob/v0.2.8/LICENSE). See [third-party notices](https://github.com/MedMLX/medsam2-mlx/blob/v0.2.8/THIRD_PARTY_NOTICES.md). Model weights retain their publisher terms; see the [model card](https://huggingface.co/MedMLX/medsam2-mlx).
+[Apache-2.0](https://github.com/MedMLX/medsam2-mlx/blob/v0.3.0/LICENSE). See [third-party notices](https://github.com/MedMLX/medsam2-mlx/blob/v0.3.0/THIRD_PARTY_NOTICES.md). Model weights retain their publisher terms; see the [model card](https://huggingface.co/MedMLX/medsam2-mlx).
 
 For research and education. Outputs require human review.
