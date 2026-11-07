@@ -21,6 +21,8 @@ Segment lesions or organs from a box, point or mask prompt, then track them thro
 | :--- | :--- |
 | Scan + slice-level prompt | Tracked masks on the input grid |
 
+Weights: 156 MB download. Peak MLX memory: 1.3 GB to track one box prompt through 21 slices of a 512×512×147 chest CT.
+
 ## Use with MedMLX
 
 The [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) is the lowest-friction way to use this model. It installs this runtime, downloads its weights on first use, and lets an AI agent describe, check and run `medsam2` for you.

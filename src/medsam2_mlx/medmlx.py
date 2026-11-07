@@ -48,6 +48,9 @@ MODEL = {
     "label": "MedSAM2",
     "task": "segmentation",
     "run": "medsam2_mlx.medmlx:run",
+    # Measured MLX peak for one box tracked through 21 slices of a 512x512x147 CT;
+    # larger inputs need more.
+    "peak_memory_gb": 1.3,
     "summary": (
         "Box-, point- or mask-prompted segmentation of NIfTI slices or volumes, "
         "RECIST NPZ stacks or JPEG frame folders, with optional forward and/or "
