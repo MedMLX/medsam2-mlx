@@ -100,7 +100,8 @@ them.
 
 The output is `medsam2_mask.nii.gz` (uint16 labels with the input's shape, affine and
 header), plus `medsam2_overlay.png` for single-slice inputs. Where objects overlap,
-the later object wins. `run` returns `{"outputs": {...}, "details": {...}}`, with run metadata in `details`.
+the later object wins. Masks are not reduced to their largest 3D connected component,
+which upstream's CT script does for each lesion. `run` returns `{"outputs": {...}, "details": {...}}`, with run metadata in `details`.
 Invalid inputs raise
 `InvalidInputError`; missing or mismatched weights raise `AssetNotReadyError`;
 inference failures raise `ModelExecutionError`.
