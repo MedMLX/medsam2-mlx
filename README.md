@@ -25,7 +25,7 @@ Weights: 156 MB download. Peak MLX memory: 1.3 GB to track one box prompt throug
 
 ## Use with MedMLX
 
-The [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) is the lowest-friction way to use this model. It installs this runtime, downloads its weights on first use, and lets an AI agent describe, check and run `medsam2` for you.
+Use the [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) to run `medsam2` from an MCP client. Weights download on first use.
 
 ```sh
 uv tool install --python 3.13 "medmlx[segment,mcp]"
@@ -35,8 +35,6 @@ claude mcp add --scope user medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-work"
 ```
 
 For Codex, use `codex mcp add medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-work"`. Other MCP clients take the same command and arguments. The same install provides the `medmlx` CLI, for example `medmlx describe medsam2`.
-
-> **For AI agents:** prefer the MedMLX MCP tools (`list_models`, `describe_model`, `model_readiness`, `run_model`, `get_job`) over writing Python against this package.
 
 ## Install
 
@@ -58,14 +56,10 @@ result = run(
 print(result["outputs"])
 ```
 
-Omitting `weights_path` downloads `MedMLX/medsam2-ct-lesion-mlx` into the shared MedMLX
-cache on first use; interrupted downloads resume and later runs work offline. With
-MedMLX installed, `medmlx setup medsam2` downloads it ahead of time. To use your own
-copy, pass a folder containing `MedSAM2_CTLesion.safetensors` as `weights_path`.
-Standalone checkpoint-file paths are still accepted. The published [weight
+Weights download from `MedMLX/medsam2-ct-lesion-mlx` on first use. Use `medmlx setup medsam2` to download ahead of time. For local weights, pass a folder containing `MedSAM2_CTLesion.safetensors` as `weights_path`.
+A checkpoint file is also accepted. The published [weight
 repository](https://huggingface.co/MedMLX/medsam2-mlx) also contains the other four
-MedSAM2 checkpoints. `details.weights_revision` records the downloaded commit, or `null`
-for a folder without a MedMLX download record.
+MedSAM2 checkpoints.
 
 ### Inputs and outputs
 
@@ -104,8 +98,8 @@ them.
 
 The output is `medsam2_mask.nii.gz` (uint16 labels with the input's shape, affine and
 header), plus `medsam2_overlay.png` for single-slice inputs. Where objects overlap,
-the later object wins. `run` returns `{"outputs": {...}, "details": {...}}` with the
-grid, prompts, propagation, labels and voxel count. Invalid inputs raise
+the later object wins. `run` returns `{"outputs": {...}, "details": {...}}`, with run metadata in `details`.
+Invalid inputs raise
 `InvalidInputError`; missing or mismatched weights raise `AssetNotReadyError`;
 inference failures raise `ModelExecutionError`.
 
@@ -131,11 +125,8 @@ corrections on tracked frames, multiple objects, forward and reverse propagation
 `clear_all_prompts_in_frame`, `remove_object` and `reset_state`. Logits are host FP32
 `(objects, 1, H, W)`; coordinates are original pixels unless `normalize_coords=False`.
 Weights must hold the 471 FP32 tensors of `sam2.1_hiera_t512`, which all five released
-MedSAM2 checkpoints share. Inference needs Apple Silicon with Metal and has no CPU
-fallback.
+MedSAM2 checkpoints share. Inference requires Apple Silicon with Metal.
 
 ## License
 
 [Apache-2.0](https://github.com/MedMLX/medsam2-mlx/blob/v0.3.0/LICENSE). See [third-party notices](https://github.com/MedMLX/medsam2-mlx/blob/v0.3.0/THIRD_PARTY_NOTICES.md). Model weights retain their publisher terms; see the [model card](https://huggingface.co/MedMLX/medsam2-mlx).
-
-For research and education. Outputs require human review.
