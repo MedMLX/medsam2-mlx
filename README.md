@@ -23,7 +23,9 @@ Segment lesions or organs from a box, point or mask prompt, then track them thro
 | :--- | :--- |
 | Scan + slice-level prompt | Tracked masks on the input grid |
 
-Weights: 156 MB download. Peak MLX memory: 1.3 GB to track one box prompt through 21 slices of a 512×512×147 chest CT.
+| Model | Weights download | Peak MLX memory | Measured on |
+| :--- | ---: | ---: | :--- |
+| `medsam2` | 156 MB | 1.3 GB | One box prompt tracked through 21 slices of a 512×512×147 chest CT |
 
 ## Use with MedMLX
 
@@ -60,10 +62,11 @@ result = run(
 print(result["outputs"])
 ```
 
-Weights download from `MedMLX/medsam2-ct-lesion-mlx` on first use. Use `medmlx setup medsam2` to download ahead of time. For local weights, pass a folder containing `MedSAM2_CTLesion.safetensors` as `weights_path`.
-A checkpoint file is also accepted. The published [weight
-repository](https://huggingface.co/MedMLX/medsam2-mlx) also contains the other four
-MedSAM2 checkpoints.
+Weights download from `MedMLX/medsam2-ct-lesion-mlx` on first use; `medmlx setup medsam2`
+downloads them ahead of time. For local weights, pass a folder containing
+`MedSAM2_CTLesion.safetensors`, or a checkpoint file, as `weights_path`. The published
+[weight repository](https://huggingface.co/MedMLX/medsam2-mlx) also contains the other
+four MedSAM2 checkpoints.
 
 ### Inputs and outputs
 
@@ -84,29 +87,36 @@ MedSAM2 checkpoints.
 | `apply_postprocessing` | `True` by default: upstream stability fallback, binarized click memory and hole filling |
 | `overwrite` | `False` by default; existing outputs are never replaced |
 
-For NIfTI, `frame_idx` uses the third voxel axis, and box and point coordinates use
-the first two stored voxel axes. Coordinates are checked for shape and finiteness but
-not clipped. Each `prompts` entry is a mapping with a required `obj_id` and any of
-`frame_idx`, `box_xyxy`, `points_xy`, `point_labels`, `mask_path`, `clear_old_points`
-and `normalize_coords`; IDs must be unique and fit in uint16. With propagation, every
-prompt must be on the same frame. `"both"` resets and reseeds each object before the
-reverse pass, as the upstream CT examples do.
+**Prompts**
 
-A NIfTI volume is optionally clipped to `hu_window` and min-max scaled to uint8; every
-frame is then bicubic-resized to 512×512 and ImageNet-normalized. An `.npz` follows
-the upstream RECIST script: `imgs` in `[0, 256)` is rounded and clipped to uint8,
-never min-max scaled, with an optional `spacing`. A frame folder follows the upstream
-demo's video path; frames are read as grayscale, so color frames differ from
-upstream. Neither has a NIfTI grid, so `hu_window` and `mask_path` are rejected for
-them.
+- For NIfTI, `frame_idx` uses the third voxel axis, and box and point coordinates use the
+  first two stored voxel axes. Coordinates are checked for shape and finiteness but not
+  clipped.
+- Each `prompts` entry is a mapping with a required `obj_id` and any of `frame_idx`,
+  `box_xyxy`, `points_xy`, `point_labels`, `mask_path`, `clear_old_points` and
+  `normalize_coords`. IDs must be unique and fit in uint16.
+- With propagation, every prompt must be on the same frame. `"both"` resets and reseeds
+  each object before the reverse pass, as the upstream CT examples do.
 
-The output is `medsam2_mask.nii.gz` (uint16 labels with the input's shape, affine and
-header), plus `medsam2_overlay.png` for single-slice inputs. Where objects overlap,
-the later object wins. Masks are not reduced to their largest 3D connected component,
-which upstream's CT script does for each lesion. `run` returns `{"outputs": {...}, "details": {...}}`, with run metadata in `details`.
-Invalid inputs raise
-`InvalidInputError`; missing or mismatched weights raise `AssetNotReadyError`;
-inference failures raise `ModelExecutionError`.
+**Preprocessing**
+
+| Input | Preprocessing |
+| :--- | :--- |
+| NIfTI volume | Optionally clipped to `hu_window` and min-max scaled to uint8; every frame is then bicubic-resized to 512×512 and ImageNet-normalized |
+| `.npz` | Follows the upstream RECIST script: `imgs` in `[0, 256)` is rounded and clipped to uint8, never min-max scaled, with an optional `spacing` |
+| Frame folder | Follows the upstream demo's video path; frames are read as grayscale, so color frames differ from upstream |
+
+`.npz` stacks and frame folders have no NIfTI grid, so `hu_window` and `mask_path` are rejected for them.
+
+**Outputs**
+
+- `medsam2_mask.nii.gz`: uint16 labels with the input's shape, affine and header, plus
+  `medsam2_overlay.png` for single-slice inputs.
+- Where objects overlap, the later object wins. Masks are not reduced to their largest
+  3D connected component, which upstream's CT script does for each lesion.
+- `run` returns `{"outputs": {...}, "details": {...}}`, with run metadata in `details`.
+- Invalid inputs raise `InvalidInputError`; missing or mismatched weights raise
+  `AssetNotReadyError`; inference failures raise `ModelExecutionError`.
 
 ### Python API
 
@@ -125,12 +135,14 @@ for frame_idx, ids, logits in predictor.propagate_in_video(state):
     masks = logits > 0
 ```
 
-The predictor follows upstream `SAM2VideoPredictorNPZ`: box, point and mask prompts,
-corrections on tracked frames, multiple objects, forward and reverse propagation,
-`clear_all_prompts_in_frame`, `remove_object` and `reset_state`. Logits are host FP32
-`(objects, 1, H, W)`; coordinates are original pixels unless `normalize_coords=False`.
-Weights must hold the 471 FP32 tensors of `sam2.1_hiera_t512`, which all five released
-MedSAM2 checkpoints share. Inference requires Apple Silicon with Metal.
+- The predictor follows upstream `SAM2VideoPredictorNPZ`: box, point and mask prompts,
+  corrections on tracked frames, multiple objects, forward and reverse propagation,
+  `clear_all_prompts_in_frame`, `remove_object` and `reset_state`.
+- Logits are host FP32 `(objects, 1, H, W)`; coordinates are original pixels unless
+  `normalize_coords=False`.
+- Weights must hold the 471 FP32 tensors of `sam2.1_hiera_t512`, which all five released
+  MedSAM2 checkpoints share.
+- Inference requires Apple Silicon with Metal.
 
 ## License
 
