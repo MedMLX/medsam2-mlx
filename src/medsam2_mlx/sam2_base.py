@@ -20,9 +20,11 @@ from typing import cast
 
 from medsam2_mlx._ops import MLP, Conv2d, get_1d_sine_pe, interpolate_bilinear
 from medsam2_mlx._runtime import mx, nn
+from medsam2_mlx._storage import native_memory
 from medsam2_mlx._types import (
     FrameOutput,
     ImageFeatures,
+    MemoryTensor,
     OutputBanks,
     PointInputs,
     Tensor,
@@ -323,7 +325,7 @@ class MedSAM2Model(nn.Module):
         for t_pos, prev_out in t_pos_and_prevs:
             if prev_out is None:
                 continue
-            features = mx.array(cast(Tensor, prev_out["maskmem_features"]))
+            features = native_memory(cast(MemoryTensor, prev_out["maskmem_features"]))
             memories.append(flatten_hw(features).astype(mx.float32))
             position = flatten_hw(mx.array(cast(Tensor, prev_out["maskmem_pos_enc"])))
             positions.append(position + self.maskmem_tpos_enc[self.num_maskmem - t_pos - 1])

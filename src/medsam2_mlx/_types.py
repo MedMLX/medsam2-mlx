@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Literal, NotRequired, Protocol, TypedDict, overload
 
@@ -122,6 +123,7 @@ class CoreRuntime(Protocol):
     float32: Dtype
     bfloat16: Dtype
     int32: Dtype
+    uint16: Dtype
     random: RandomRuntime
     metal: MetalRuntime
     fast: FastRuntime
@@ -436,6 +438,25 @@ class CoreRuntime(Protocol):
 
 
 type Tensor = array | HostArray
+
+
+@dataclass(frozen=True, slots=True)
+class PackedBFloat16:
+    """Tagged host BF16 bits; ordinary uint16 tensors are never interpreted as BF16."""
+
+    bits: npt.NDArray[np.uint16]
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """Return the stored memory's original shape."""
+        return self.bits.shape
+
+    def __getitem__(self, key: slice) -> PackedBFloat16:
+        """Borrow one object's leading-axis memory slice without expanding its dtype."""
+        return PackedBFloat16(self.bits[key])
+
+
+type MemoryTensor = Tensor | PackedBFloat16
 type FrameStorage = Literal["cond_frame_outputs", "non_cond_frame_outputs"]
 
 
@@ -464,7 +485,7 @@ class MemoryEncoding(TypedDict):
 
 
 class MemoryEntry(TypedDict):
-    maskmem_features: Tensor | None
+    maskmem_features: MemoryTensor | None
     maskmem_pos_enc: Tensor | None
 
 
@@ -538,6 +559,7 @@ class SessionState(TypedDict):
     frames_already_tracked: dict[int, FrameTracking]
     keep_image_features: NotRequired[bool]
     prefetched_frame_idx: NotRequired[int]
+    history_cursor: NotRequired[tuple[int, bool]]
 
 
 class ConnectedComponents(Protocol):

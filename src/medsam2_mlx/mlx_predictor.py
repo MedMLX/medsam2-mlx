@@ -12,13 +12,16 @@ import numpy as np
 from medmlx_core.errors import AssetNotReadyError
 
 from medsam2_mlx._runtime import import_mlx
+from medsam2_mlx._storage import native_memory
 from medsam2_mlx._types import (
     ArrayInput,
     FloatArray,
     FrameOutput,
     HostArray,
     ImageFeatures,
+    MemoryTensor,
     OutputBanks,
+    PackedBFloat16,
     PointInputs,
     SessionState,
     Tensor,
@@ -73,8 +76,9 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
         offload_video_to_cpu: bool = False,
         offload_state_to_cpu: bool = False,
         async_loading_frames: bool = False,
+        eager_first_frame: bool = False,
     ) -> SessionState:
-        """Start a session over preprocessed frames and prime the first frame's features.
+        """Start a session over preprocessed frames, encoding the first requested frame.
 
         Args:
             images: FP32 array of shape (D, 3, 512, 512), finite, one preprocessed
@@ -89,12 +93,13 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
             offload_state_to_cpu: Keep masks and spatial memories in host memory.
             async_loading_frames: Accepted for upstream signature compatibility; it
                 is stored in the state and has no effect.
+            eager_first_frame: Validate and encode frame zero during initialization.
+                The default defers lazy-frame validation until the frame is accessed.
 
         Raises:
             ValueError: An array stack is empty, non-finite, not FP32, or the wrong
                 shape; a lazy source is empty or not offloaded. Lazy frames are
-                checked for shape when accessed, beginning with frame 0 during
-                initialization; NumPy frames are also checked for dtype and finiteness.
+                checked for shape, dtype and finiteness when accessed.
             MissingDependencyError: Not on macOS arm64, or Metal is unavailable.
         """
         mx = import_mlx()
@@ -115,6 +120,7 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
             offload_video_to_cpu=offload_video_to_cpu,
             offload_state_to_cpu=offload_state_to_cpu,
             async_loading_frames=async_loading_frames,
+            eager_first_frame=eager_first_frame,
         )
         state["keep_image_features"] = False
         return state
@@ -196,6 +202,13 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
             return cast(HostArray, np.asarray(value.astype(mx.float32)))
         return value
 
+    def _store_memory(self, inference_state: SessionState, value: array) -> MemoryTensor:
+        """Offload spatial memory as tagged, owned BF16 bits without an FP32 expansion."""
+        if inference_state["offload_state_to_cpu"]:
+            mx = import_mlx()
+            return PackedBFloat16(np.array(value.view(mx.uint16), dtype=np.uint16))
+        return value
+
     def _run_single_frame_inference(
         self,
         inference_state: SessionState,
@@ -227,7 +240,7 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
         )
         arrays = [pred_masks, compact["obj_ptr"], compact["object_score_logits"]]
         if compact["maskmem_features"] is not None:
-            arrays.append(mx.array(compact["maskmem_features"]))
+            arrays.append(native_memory(compact["maskmem_features"]))
         # MLX is lazy: evaluate here so each frame's work finishes before the next one
         # and non-finite output is caught at the frame that produced it. One combined
         # flag keeps this to a single host synchronization per frame.
@@ -356,6 +369,7 @@ def build_predictor(
     *,
     weights: str | Path | Mapping[str, ArrayInput] | None = None,
     model: MedSAM2Model | None = None,
+    retain_history: bool = True,
 ) -> MedSAM2MLXPredictor:
     """Build a predictor from converted weights or an already constructed MLX model.
 
@@ -363,6 +377,8 @@ def build_predictor(
     path or state dict) takes precedence over ``runtime.checkpoint``. With
     ``runtime.apply_postprocessing`` the predictor fills holes of up to
     ``FILL_HOLE_AREA`` (8) pixels in the 128 x 128 mask logits.
+    ``retain_history=False`` bounds automatic history for one-way batch propagation;
+    reset before changing direction or revisiting an earlier frame.
 
     Raises:
         AssetNotReadyError: No weights, checkpoint or model was supplied.
@@ -381,5 +397,7 @@ def build_predictor(
             apply_postprocessing=runtime.apply_postprocessing,
         )
     return MedSAM2MLXPredictor(
-        model, fill_hole_area=FILL_HOLE_AREA if runtime.apply_postprocessing else 0
+        model,
+        fill_hole_area=FILL_HOLE_AREA if runtime.apply_postprocessing else 0,
+        retain_history=retain_history,
     )

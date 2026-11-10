@@ -19,7 +19,7 @@ import pytest
 from medsam2_mlx import mlx_model
 from medsam2_mlx._ops import interpolate_bicubic
 from medsam2_mlx._runtime import mx
-from medsam2_mlx._types import HeadArguments, HostArray, SessionState
+from medsam2_mlx._types import HeadArguments, HostArray, PackedBFloat16, SessionState
 from medsam2_mlx.mlx_predictor import build_predictor
 from medsam2_mlx.request import MedSAM2RuntimeConfig
 from tests.conftest import load_small_model, relative_error
@@ -210,3 +210,102 @@ def test_session_matches_reference(
         rel, agreement = _compare_masks(value, expected)
         assert rel < SESSION_RTOL, (key, rel)
         assert agreement == 1.0, (key, agreement)
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["forward", "reverse"])
+@pytest.mark.parametrize("offload", [False, True], ids=["device", "host"])
+def test_monotonic_history_preserves_tracking_and_corrections(
+    model: MedSAM2Model, reverse: bool, offload: bool
+) -> None:
+    """Match retained history beyond both lookbacks while keeping prompts and corrections."""
+    from tests.reference_cases import video_frames
+
+    images = np.tile(video_frames(), (6, 1, 1, 1))
+    start = len(images) - 1 if reverse else 0
+    direction = -1 if reverse else 1
+    mask = np.zeros((17, 23), dtype=np.bool_)
+    mask[4:12, 6:16] = True
+    results: list[list[HostArray]] = []
+    for retain in (True, False):
+        predictor = build_predictor(MedSAM2RuntimeConfig(), model=model, retain_history=retain)
+        state = predictor.init_state(
+            images, 17, 23, offload_video_to_cpu=True, offload_state_to_cpu=offload
+        )
+        for obj_id in (1, 2):
+            predictor.add_new_mask(state, start, obj_id, mask)
+        # A second conditioning frame must survive even after it leaves the rings.
+        predictor.add_new_mask(state, start + direction * 3, 1, mask)
+        outputs: list[HostArray] = []
+        for _, _, masks in predictor.propagate_in_video(
+            state, start_frame_idx=start, max_frame_num_to_track=12, reverse=reverse
+        ):
+            outputs.append(masks.copy())
+        index = start + direction * 12
+        predictor.add_new_mask(state, index, 1, ~mask)
+        for _, _, masks in predictor.propagate_in_video(
+            state, start_frame_idx=index + direction, reverse=reverse
+        ):
+            outputs.append(masks.copy())
+        results.append(outputs)
+        if offload:
+            memory = state["output_dict"]["cond_frame_outputs"][start]["maskmem_features"]
+            assert isinstance(memory, PackedBFloat16)
+            assert memory.bits.dtype == np.uint16
+            assert memory.bits.nbytes == memory.bits.size * 2
+        if not retain:
+            protected = state["consolidated_frame_inds"]["non_cond_frame_outputs"]
+            for banks in [state["output_dict"], *state["output_dict_per_obj"].values()]:
+                automatic = {
+                    key: value
+                    for key, value in banks["non_cond_frame_outputs"].items()
+                    if key not in protected
+                }
+                assert len(automatic) <= model.max_obj_ptrs_in_encoder - 1
+                assert sum(v["maskmem_features"] is not None for v in automatic.values()) <= (
+                    model.num_maskmem - 1
+                )
+                assert start in banks["cond_frame_outputs"]
+                assert start + direction * 3 in banks["cond_frame_outputs"]
+                assert protected <= banks["non_cond_frame_outputs"].keys()
+            with pytest.raises(ValueError, match="reset"):
+                next(predictor.propagate_in_video(state, start_frame_idx=start, reverse=reverse))
+            predictor.reset_state(state)
+            predictor.add_new_mask(state, start, 1, mask)
+            assert (
+                next(predictor.propagate_in_video(state, start_frame_idx=start, reverse=reverse))[0]
+                == start
+            )
+    assert len(results[0]) == len(results[1]) == len(images)
+    for retained, bounded in zip(*results, strict=True):
+        np.testing.assert_array_equal(retained, bounded)
+
+
+def test_lazy_session_starts_at_prompt_and_defers_bad_frame(model: MedSAM2Model) -> None:
+    """Allow a valid later prompt without reading an unrelated malformed frame zero."""
+    from tests.reference_cases import video_frames
+
+    class Frames:
+        def __init__(self) -> None:
+            self.values = video_frames()
+            self.visited: list[int] = []
+
+        def __len__(self) -> int:
+            return len(self.values)
+
+        def __getitem__(self, index: int) -> HostArray:
+            self.visited.append(index)
+            return np.zeros((3, 1, 1), dtype=np.float32) if index == 0 else self.values[index]
+
+    predictor = build_predictor(MedSAM2RuntimeConfig(), model=model)
+    frames = Frames()
+    state = predictor.init_state(frames, 17, 23, offload_video_to_cpu=True)
+    assert frames.visited == []
+    mask = np.zeros((17, 23), dtype=np.bool_)
+    mask[4:12, 6:16] = True
+    index, ids, masks = predictor.add_new_mask(state, 4, 1, mask)
+    assert index == 4 and ids == [1] and np.isfinite(masks).all()
+    assert frames.visited == [4]
+    with pytest.raises(ValueError, match="shape"):
+        predictor.add_new_mask(state, 0, 1, mask)
+    with pytest.raises(ValueError, match="shape"):
+        predictor.init_state(Frames(), 17, 23, offload_video_to_cpu=True, eager_first_frame=True)

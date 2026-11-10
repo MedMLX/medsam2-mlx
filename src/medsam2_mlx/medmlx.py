@@ -760,7 +760,7 @@ def _build_predictor(runtime: MedSAM2RuntimeConfig, weights: Path) -> RunnerPred
     from medsam2_mlx.mlx_predictor import build_predictor
 
     try:
-        return build_predictor(runtime, weights=weights)
+        return build_predictor(runtime, weights=weights, retain_history=False)
     except (InvalidInputError, OSError, RuntimeError, ValueError) as error:
         raise AssetNotReadyError(
             f"MedSAM2 MLX weights {weights} do not match the pinned sam2.1_hiera_t512 "

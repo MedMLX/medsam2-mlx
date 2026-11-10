@@ -31,6 +31,7 @@ import numpy as np
 
 from medsam2_mlx._ops import interpolate_bilinear
 from medsam2_mlx._runtime import mx
+from medsam2_mlx._storage import native_memory
 from medsam2_mlx._types import (
     ArrayInput,
     ConnectedComponents,
@@ -38,6 +39,7 @@ from medsam2_mlx._types import (
     FrameOutput,
     FrameStorage,
     ImageFeatures,
+    MemoryTensor,
     OutputBanks,
     PointInputs,
     SessionState,
@@ -91,16 +93,23 @@ class SAM2VideoPredictor:
     (foreground > 0); an object the model scores as absent gets the constant -1024.
     """
 
-    def __init__(self, model: MedSAM2Model, *, fill_hole_area: int = 0) -> None:
-        """Attach a segmentation model and the optional low-resolution hole-fill limit."""
+    def __init__(
+        self, model: MedSAM2Model, *, fill_hole_area: int = 0, retain_history: bool = True
+    ) -> None:
+        """Attach a model, retaining history for revisits unless monotonic tracking is selected."""
         self.model = model
         self.image_size = model.image_size
         self.fill_hole_area = fill_hole_area
+        self.retain_history = retain_history
 
     # --- storage hooks ---------------------------------------------------------------
 
     def _store_tensor(self, inference_state: SessionState, value: Tensor) -> Tensor:
         """Move a state tensor to its storage location (identity on device)."""
+        return value
+
+    def _store_memory(self, inference_state: SessionState, value: array) -> MemoryTensor:
+        """Store the BF16 spatial memory, retaining native storage in the base predictor."""
         return value
 
     def _frame(self, inference_state: SessionState, frame_idx: int) -> array:
@@ -117,12 +126,14 @@ class SAM2VideoPredictor:
         offload_video_to_cpu: bool = False,
         offload_state_to_cpu: bool = False,
         async_loading_frames: bool = False,
+        eager_first_frame: bool = False,
     ) -> SessionState:
-        """Create an empty session over ``images`` and compute frame 0's image features.
+        """Create a session, encoding frames on first access by default.
 
         ``images`` are preprocessed frames (D, 3, 512, 512), ``video_height`` and
         ``video_width`` the original slice size in pixels. ``async_loading_frames`` is
-        stored but unused.
+        stored but unused. ``eager_first_frame`` primes frame zero for callers that
+        require its validation and encoding during initialization.
         """
         inference_state: SessionState = {
             "images": images,
@@ -149,7 +160,8 @@ class SAM2VideoPredictor:
             "tracking_has_started": False,
             "frames_already_tracked": {},
         }
-        self._get_image_feature(inference_state, frame_idx=0, batch_size=1)
+        if eager_first_frame:
+            self._get_image_feature(inference_state, frame_idx=0, batch_size=1)
         return inference_state
 
     def _obj_id_to_idx(self, inference_state: SessionState, obj_id: int) -> int:
@@ -606,6 +618,14 @@ class SAM2VideoPredictor:
             start_frame_idx = min(output_dict["cond_frame_outputs"])
         if max_frame_num_to_track is None:
             max_frame_num_to_track = num_frames
+        cursor = inference_state.get("history_cursor")
+        if not self.retain_history and cursor is not None:
+            previous, direction = cursor
+            revisits = start_frame_idx > previous if reverse else start_frame_idx < previous
+            if reverse != direction or revisits:
+                raise ValueError(
+                    "Monotonic tracking cannot revisit history; reset the session first"
+                )
         if reverse:
             end_frame_idx = max(start_frame_idx - max_frame_num_to_track, 0)
             order = (
@@ -651,7 +671,37 @@ class SAM2VideoPredictor:
                 output_dict[storage_key][frame_idx] = current_out
             self._add_output_per_object(inference_state, frame_idx, current_out, storage_key)
             inference_state["frames_already_tracked"][frame_idx] = {"reverse": reverse}
+            if not self.retain_history:
+                self._prune_history(inference_state, frame_idx, reverse)
             yield frame_idx, obj_ids, self._get_orig_video_res_output(inference_state, pred_masks)
+
+    def _prune_history(self, state: SessionState, frame_idx: int, reverse: bool) -> None:
+        """Keep every prompt/correction and only the next frame's spatial and pointer lookbacks."""
+        spatial_keep = self.model.num_maskmem - 1
+        pointer_keep = self.model.max_obj_ptrs_in_encoder - 1
+        protected = state["consolidated_frame_inds"]["non_cond_frame_outputs"]
+        banks = [state["output_dict"], *state["output_dict_per_obj"].values()]
+        for bank in banks:
+            outputs = bank["non_cond_frame_outputs"]
+            for index in list(outputs):
+                age = index - frame_idx if reverse else frame_idx - index
+                if index in protected or age < 0:
+                    continue
+                if age >= max(spatial_keep, pointer_keep):
+                    del outputs[index]
+                elif age >= spatial_keep:
+                    # Pointer-only history does not need the much larger spatial memory.
+                    outputs[index]["maskmem_features"] = None
+                    outputs[index]["maskmem_pos_enc"] = None
+        for index in list(state["frames_already_tracked"]):
+            age = index - frame_idx if reverse else frame_idx - index
+            if (
+                age >= max(spatial_keep, pointer_keep)
+                and index not in protected
+                and index not in state["output_dict"]["cond_frame_outputs"]
+            ):
+                del state["frames_already_tracked"][index]
+        state["history_cursor"] = (frame_idx, reverse)
 
     def _add_output_per_object(
         self,
@@ -777,6 +827,7 @@ class SAM2VideoPredictor:
 
     def _reset_tracking_results(self, inference_state: SessionState) -> None:
         """Clear prompts and tracked outputs while retaining registered objects."""
+        inference_state.pop("history_cursor", None)
         for value in inference_state["point_inputs_per_obj"].values():
             value.clear()
         for value in inference_state["mask_inputs_per_obj"].values():
@@ -871,7 +922,7 @@ class SAM2VideoPredictor:
             run_mem_encoder=run_mem_encoder,
             prev_sam_mask_logits=prev_sam_mask_logits,
         )
-        maskmem_features: Tensor | None = current["maskmem_features"]
+        maskmem_features = current["maskmem_features"]
         if maskmem_features is not None:
             # Upstream stores spatial memory in BF16, also for FP32 inference.
             maskmem_features = maskmem_features.astype(mx.bfloat16)
@@ -880,13 +931,16 @@ class SAM2VideoPredictor:
             if maskmem_features is not None:
                 pending.append(maskmem_features)
             self._overlap_next_frame(inference_state, pending, prefetch_frame_idx)
-        if maskmem_features is not None:
-            maskmem_features = self._store_tensor(inference_state, maskmem_features)
+        stored_memory = (
+            None
+            if maskmem_features is None
+            else self._store_memory(inference_state, maskmem_features)
+        )
         pred_masks = current["pred_masks"]
         if self.fill_hole_area > 0:
             pred_masks = self._fill_holes(pred_masks)
         compact: FrameOutput = {
-            "maskmem_features": maskmem_features,
+            "maskmem_features": stored_memory,
             "maskmem_pos_enc": self._get_maskmem_pos_enc(
                 inference_state, current["maskmem_pos_enc"]
             ),
@@ -904,13 +958,13 @@ class SAM2VideoPredictor:
         high_res_masks: array,
         object_score_logits: array,
         is_mask_from_pts: bool,
-    ) -> tuple[Tensor, Tensor | None]:
+    ) -> tuple[MemoryTensor, Tensor | None]:
         """Encode frame masks, round memory to BF16 and use the configured storage."""
         backbone = self._get_image_feature(inference_state, frame_idx, batch_size)
         features, position = self.model.encode_new_memory(
             backbone["backbone_fpn"][-1], high_res_masks, object_score_logits, is_mask_from_pts
         )
-        stored_features = self._store_tensor(inference_state, features.astype(mx.bfloat16))
+        stored_features = self._store_memory(inference_state, features.astype(mx.bfloat16))
         return stored_features, self._get_maskmem_pos_enc(inference_state, position)
 
     def _get_maskmem_pos_enc(
@@ -983,12 +1037,16 @@ class SAM2VideoPredictor:
         keep = mx.array(remain)
         for storage_key in ("cond_frame_outputs", "non_cond_frame_outputs"):
             for frame_idx, out in inference_state["output_dict"][storage_key].items():
-                out["maskmem_features"] = self._store_tensor(
-                    inference_state, mx.array(cast(Tensor, out["maskmem_features"]))[keep]
-                )
-                out["maskmem_pos_enc"] = self._get_maskmem_pos_enc(
-                    inference_state, mx.array(cast(Tensor, out["maskmem_pos_enc"]))[keep]
-                )
+                features = out["maskmem_features"]
+                if features is not None:
+                    out["maskmem_features"] = self._store_memory(
+                        inference_state, native_memory(features)[keep]
+                    )
+                position = out["maskmem_pos_enc"]
+                if position is not None:
+                    out["maskmem_pos_enc"] = self._get_maskmem_pos_enc(
+                        inference_state, mx.array(position)[keep]
+                    )
                 out["pred_masks"] = self._store_tensor(
                     inference_state, mx.array(out["pred_masks"])[keep]
                 )
