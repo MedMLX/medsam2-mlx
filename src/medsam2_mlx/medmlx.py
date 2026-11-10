@@ -1020,7 +1020,7 @@ def run(
             ``box_xyxy``/``points_xy``.
         frame_idx: Zero-based slice index of the single-object prompt.
         obj_id: Positive label written for the single-object prompt. Output labels are
-            uint16, so IDs must fit in 1..65535; this upper bound is not checked at ingress.
+            uint16, so IDs must fit in 1..65535.
         prompts: Multiple objects' prompts; see above. Exclusive with
             ``box_xyxy``, ``points_xy``, ``point_labels``, ``mask_path``, and
             with passing a non-default ``frame_idx``/``obj_id``.
@@ -1172,6 +1172,8 @@ def run(
         tuple(request.mask_path for request in requests if request.mask_path is not None),
     )
     object_ids = [request.obj_id for request in requests]
+    if any(not 1 <= obj_id <= 65535 for obj_id in object_ids):
+        raise InvalidInputError("MedSAM2 output obj_id values must fit in uint16 (1..65535)")
     if len(set(object_ids)) != len(object_ids):
         raise InvalidInputError("MedSAM2 prompts obj_id values must be unique")
     if propagation != "none" and len({request.frame_idx for request in requests}) > 1:

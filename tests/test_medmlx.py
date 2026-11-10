@@ -208,6 +208,8 @@ def test_mismatched_weights_raise_asset_not_ready(tmp_path: Path, weights: str) 
         "zero-stop",
         "existing-output",
         "dangling-output",
+        "object-id-overflow",
+        "prompt-object-id-overflow",
     ],
 )
 def test_invalid_arguments_are_rejected_before_downloading_weights(
@@ -235,6 +237,11 @@ def test_invalid_arguments_are_rejected_before_downloading_weights(
         arguments["overwrite"] = "yes"
     elif problem == "zero-stop":
         arguments["stop_after_empty"] = 0
+    elif problem == "object-id-overflow":
+        arguments["obj_id"] = 65536
+    elif problem == "prompt-object-id-overflow":
+        arguments.pop("box_xyxy")
+        arguments["prompts"] = [{"obj_id": 65536, "box_xyxy": [2, 3, 20, 15]}]
     else:
         output.mkdir()
         mask_path = output / medmlx.MASK_NAME
