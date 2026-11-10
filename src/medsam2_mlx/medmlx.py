@@ -9,11 +9,12 @@ NPZ and frame-folder inputs use a synthetic grid.
 from __future__ import annotations
 
 import os
+import shutil
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkdtemp
 from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
@@ -946,6 +947,43 @@ def _parse_prompt_entry(entry: Mapping[str, object], *, default_frame_idx: int) 
     )
 
 
+def _publish(staged: dict[Path, Path], *, remove: tuple[Path, ...] = ()) -> None:
+    """Restore the prior artifact set if replacement or stale-output removal fails."""
+    recovery = Path(mkdtemp(prefix=".medsam2-backup-", dir=next(iter(staged)).parent))
+    cleanup = True
+    try:
+        backups: dict[Path, Path] = {}
+        for index, path in enumerate((*staged, *remove)):
+            if path.exists() or path.is_symlink():
+                backup = recovery / str(index)
+                os.link(path, backup, follow_symlinks=False)
+                backups[path] = backup
+        changed: list[Path] = []
+        try:
+            for path, temporary in staged.items():
+                os.replace(temporary, path)
+                changed.append(path)
+            for path in remove:
+                if path.exists() or path.is_symlink():
+                    path.unlink()
+                    changed.append(path)
+        except BaseException:
+            try:
+                for path in reversed(changed):
+                    backup = backups.get(path)
+                    if backup is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        os.replace(backup, path)
+            except OSError as error:
+                cleanup = False
+                raise OSError(f"Cannot restore outputs; backups retained at {recovery}") from error
+            raise
+    finally:
+        if cleanup:
+            shutil.rmtree(recovery)
+
+
 def run(
     *,
     image_path: str | Path,
@@ -1253,8 +1291,7 @@ def run(
             save_overlay(
                 _pil_from_uint8(stack[0]), mask_volume[0] > 0, prompt_tuple, staged[overlay_output]
             )
-        for target, temporary in staged.items():
-            os.replace(temporary, target)
+        _publish(staged, remove=() if overlay_output in staged else (overlay_output,))
     outputs = {"mask": mask_output.as_posix()}
     if overlay_output in staged:
         outputs["overlay"] = overlay_output.as_posix()

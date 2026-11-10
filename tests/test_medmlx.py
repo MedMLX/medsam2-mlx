@@ -6,6 +6,7 @@ is not part of this repository.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import cast
@@ -171,6 +172,59 @@ def test_run_with_seeded_network_matches_upstream(
         scale = max(float(np.abs(scores).max()), 1e-12)
         assert float(delta.max()) / scale < 1e-4
         assert np.array_equal(logits[0] > 0, scores > 0)
+
+
+def test_publication_failure_restores_prior_mask_and_overlay(
+    tmp_path: Path, seeded_weights: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = FAKE_RUNS["slice2d"]
+    volume, mask = prepare_inputs(tmp_path / "inputs", run)
+    output = tmp_path / "out"
+    output.mkdir()
+    old = {
+        output / medmlx.MASK_NAME: b"old mask",
+        output / medmlx.OVERLAY_NAME: b"old overlay",
+    }
+    for path, contents in old.items():
+        path.write_bytes(contents)
+    replace = os.replace
+    failed = False
+
+    def fail_overlay(source: Path, destination: Path) -> None:
+        nonlocal failed
+        if destination == output / medmlx.OVERLAY_NAME and not failed:
+            failed = True
+            raise OSError("injected publication failure")
+        replace(source, destination)
+
+    monkeypatch.setattr(medmlx.os, "replace", fail_overlay)
+    with pytest.raises(OSError, match="injected publication failure"):
+        medmlx.run(
+            **_arguments(run, volume, mask),
+            weights_path=seeded_weights, output_dir=output, overwrite=True,
+        )
+    for path, contents in old.items():
+        assert path.read_bytes() == contents
+    assert not list(output.glob(".medsam2-*"))
+
+
+def test_multiframe_run_removes_prior_overlay(
+    tmp_path: Path, seeded_weights: Path
+) -> None:
+    run = FAKE_RUNS["both"]
+    volume, mask = prepare_inputs(tmp_path / "inputs", run)
+    output = tmp_path / "out"
+    output.mkdir()
+    overlay = output / medmlx.OVERLAY_NAME
+    overlay.write_bytes(b"overlay from a prior single-frame run")
+
+    result = medmlx.run(
+        **_arguments(run, volume, mask),
+        weights_path=seeded_weights, output_dir=output, overwrite=True,
+    )
+
+    assert set(result["outputs"]) == {"mask"}
+    assert not overlay.exists()
 
 
 @pytest.mark.parametrize(
