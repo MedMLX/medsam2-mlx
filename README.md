@@ -111,11 +111,14 @@ from medsam2_mlx import MedSAM2RuntimeConfig, build_predictor
 
 config = MedSAM2RuntimeConfig(checkpoint=Path("MedSAM2_CTLesion.safetensors"))
 predictor = build_predictor(config)
-# images: finite FP32 (frames, 3, 512, 512); height, width: original slice size
+
+images = np.zeros((8, 3, 512, 512), np.float32)  # preprocessed slices, finite FP32
+height, width = 512, 512  # original slice size in pixels
+box = np.array([200, 200, 260, 260], np.float32)  # x0, y0, x1, y1 on frame 0
+
 state = predictor.init_state(images, height, width, offload_video_to_cpu=True)
-predictor.add_new_points_or_box(state, 0, 1, box=np.array([x0, y0, x1, y1], np.float32))
-for frame_idx, ids, logits in predictor.propagate_in_video(state):
-    masks = logits > 0
+predictor.add_new_points_or_box(state, 0, 1, box=box)
+masks = {frame_idx: logits > 0 for frame_idx, ids, logits in predictor.propagate_in_video(state)}
 ```
 
 - The predictor follows upstream `SAM2VideoPredictorNPZ`: box, point and mask prompts,
