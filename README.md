@@ -59,7 +59,7 @@ four MedSAM2 checkpoints.
 | `output_dir` | Directory for the outputs; created if missing |
 | `weights_path` | Optional folder containing `MedSAM2_CTLesion.safetensors`, or a `.safetensors` file |
 | `box_xyxy` | `[x_min, y_min, x_max, y_max]` on `frame_idx`; combinable with `points_xy` |
-| `points_xy`, `point_labels` | `[[x, y], ...]` on `frame_idx`, each labelled `1` foreground or `0` background |
+| `points_xy`, `point_labels` | `[[x, y], ...]` on `frame_idx`, each labeled `1` foreground or `0` background |
 | `mask_path` | Binary seed NIfTI with the input's shape and affine, instead of a box or points |
 | `frame_idx`, `obj_id` | Zero-based prompt slice (default `0`) and positive object label (default `1`) |
 | `prompts` | Prompts for several objects, replacing the single-object arguments |

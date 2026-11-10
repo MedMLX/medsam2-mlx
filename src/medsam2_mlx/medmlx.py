@@ -1088,7 +1088,7 @@ def run(
         ``outputs`` maps ``mask`` to ``medsam2_mask.nii.gz`` (uint16 labels 0 and
         each ``obj_id``) and, for single-slice inputs, ``overlay`` to
         ``medsam2_overlay.png``. ``details`` holds the frame count and size,
-        labelled voxel count, slices with labels, object ids, and every prompt.
+        labeled voxel count, slices with labels, object ids, and every prompt.
 
     Raises:
         InvalidInputError: Missing or unreadable inputs, no prompt or conflicting

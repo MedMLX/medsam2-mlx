@@ -270,7 +270,7 @@ class SAM2VideoPredictor:
                     category=UserWarning,
                     stacklevel=2,
                 )
-            # A box is two labelled corner points: 2 = top-left, 3 = bottom-right.
+            # A box is two labeled corner points: 2 = top-left, 3 = bottom-right.
             box_coords = np.asarray(box, dtype=np.float32).reshape(1, 2, 2)
             box_labels = np.array([[2, 3]], dtype=np.int32)
             points_np = np.concatenate([box_coords, points_np], axis=1)

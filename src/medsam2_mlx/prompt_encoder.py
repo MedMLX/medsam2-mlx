@@ -112,7 +112,7 @@ class PromptEncoder(nn.Module):
         padding point is appended to the given points. ``masks`` (B, 1, 128, 128) are
         dense logits; without them a learned "no mask" embedding fills the 32 x 32 grid.
 
-        SAM 2 always passes boxes as labelled corner points, so there is no box input.
+        SAM 2 always passes boxes as labeled corner points, so there is no box input.
         """
         if points is not None:
             batch = points[0].shape[0]
