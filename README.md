@@ -13,7 +13,9 @@ Segment lesions or organs from a box, point or mask prompt, then track them thro
 
 [Model weights](https://huggingface.co/MedMLX/medsam2-ct-lesion-mlx) · [MedMLX](https://github.com/MedMLX/medmlx)
 
-<img src="https://raw.githubusercontent.com/MedMLX/medsam2-mlx/v0.3.0/docs/showcase.png" alt="MedSAM2 masks propagated through a scan from one slice prompt" width="100%">
+<img src="https://raw.githubusercontent.com/MedMLX/medsam2-mlx/main/docs/showcase.png" alt="A lung nodule mask from one box prompt, propagated 5 mm above and below the prompted slice" width="100%">
+
+<sub>One box prompt on a [LUNA16](https://zenodo.org/records/3723295) chest CT, CC BY 4.0, propagated through the nodule.</sub>
 
 </div>
 
