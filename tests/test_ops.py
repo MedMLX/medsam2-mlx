@@ -7,9 +7,10 @@ from typing import TYPE_CHECKING, Protocol, cast
 import numpy as np
 import pytest
 
-from medsam2_mlx._ops import Conv2d, interpolate_bilinear
+from medsam2_mlx._ops import Conv2d, fill_small_holes_fp32, interpolate_bilinear
 from medsam2_mlx._runtime import mx
 from medsam2_mlx.mlx_model import resize_mask
+from medsam2_mlx.video_predictor import fill_small_holes
 from tests.reference_types import FloatArray, TorchRuntime
 
 if TYPE_CHECKING:
@@ -92,3 +93,30 @@ def test_mask_antialias_resize_matches_torch(
     result = resize_mask(mx.array(image), target, antialias=True)
     mx.eval(result)
     np.testing.assert_allclose(cast(FloatArray, np.asarray(result)), source, atol=2e-6, rtol=2e-6)
+
+
+@pytest.mark.parametrize("max_area", [1, 8, 16])
+def test_metal_hole_fill_matches_host_bits(max_area: int) -> None:
+    """Preserve 8-connectivity, area cutoffs and IEEE values on strided planes."""
+    scores = np.ones((3, 2, 19, 23), dtype=np.float32)
+    # A diagonal component connects eight pixels; the adjacent plane has nine.
+    for size, plane in [(8, 0), (9, 1)]:
+        for index in range(size):
+            scores[0, plane, index, index] = -1
+    scores[1] = np.random.default_rng(23).choice(
+        np.array([-1, 0, 1], dtype=np.float32), size=(2, 19, 23)
+    )
+    # Build the bits directly so the host never flushes a subnormal before upload.
+    bits = np.array([
+        0, 0x80000000, 1, 0x80000001, 0x7f800000, 0xff800000,
+        0x7fc00001, 0xffc00001,
+    ], dtype=np.uint32)
+    scores[2, 0, 0, :len(bits)] = bits.view(np.float32)
+    scores[2, 1, :, :] = -1
+    expected = fill_small_holes(scores, max_area)
+    device = mx.transpose(mx.array(scores.swapaxes(-1, -2).copy()), (0, 1, 3, 2))
+    actual = fill_small_holes_fp32(device, max_area)
+    mx.eval(actual)
+    np.testing.assert_array_equal(
+        np.asarray(actual).view(np.uint32), expected.view(np.uint32)
+    )

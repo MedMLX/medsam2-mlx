@@ -204,8 +204,15 @@ def sequential(layers: Sequence[Callable[[array], array]], x: array) -> array:
 
 
 @lru_cache(maxsize=32)
-def _sine_position(num_pos_feats: int, height: int, width: int) -> HostArray:
-    """``PositionEmbeddingSine(num_pos_feats, normalize=True)`` for one image, (C, H, W)."""
+def _sine_position(num_pos_feats: int, height: int, width: int) -> array:
+    """Cache the fixed FP32 sine table on Metal for one image, (C, H, W).
+
+    Preserve the reference NumPy arithmetic, but copy the table only once per grid.
+    An explicit GPU context keeps this process-local cache independent of the caller's
+    default device or stream.
+    """
+    from mlx.core import gpu, stream
+
     half = num_pos_feats // 2
     scale = np.float32(2 * math.pi)
     eps = np.float32(1e-6)
@@ -225,7 +232,9 @@ def _sine_position(num_pos_feats: int, height: int, width: int) -> HostArray:
 
     pos_y = np.broadcast_to(encode(y)[:, None, :], (height, width, half))
     pos_x = np.broadcast_to(encode(x)[None, :, :], (height, width, half))
-    return np.ascontiguousarray(np.concatenate([pos_y, pos_x], axis=2).transpose(2, 0, 1))
+    position = np.ascontiguousarray(np.concatenate([pos_y, pos_x], axis=2).transpose(2, 0, 1))
+    with stream(gpu):
+        return mx.array(position)
 
 
 def sine_position_encoding(num_pos_feats: int, batch: int, height: int, width: int) -> array:
@@ -233,7 +242,7 @@ def sine_position_encoding(num_pos_feats: int, batch: int, height: int, width: i
 
     The encoding is the same for every batch element, so it is computed once per size.
     """
-    pos = mx.array(_sine_position(num_pos_feats, height, width))
+    pos = _sine_position(num_pos_feats, height, width)
     return mx.broadcast_to(pos[None], (batch, *pos.shape))
 
 
@@ -267,12 +276,227 @@ def axial_rope(dim: int, end_x: int, end_y: int, theta: float) -> tuple[HostArra
     return np.cos(angles), np.sin(angles)
 
 
+@lru_cache(maxsize=16)
+def axial_rope_device(dim: int, end_x: int, end_y: int, theta: float) -> tuple[array, array]:
+    """Cache the unchanged NumPy axial tables on an explicit Metal stream."""
+    from mlx.core import gpu, stream
+
+    cos, sin = axial_rope(dim, end_x, end_y, theta)
+    with stream(gpu):
+        return mx.array(cos), mx.array(sin)
+
+
+@lru_cache(maxsize=1)
+def _rope_kernel() -> MetalKernel:
+    """Build the cached single-launch rotation kernel.
+
+    Template constants describe the flat pair grid: ``HALF`` is ``D / 2``,
+    ``ROW_LEN`` is the input's ``L``, ``TABLE_ROWS`` is ``cos.shape[0]``,
+    ``ROTATE_ROWS`` is how many leading positions per ``ROW_LEN`` row are
+    rotated, and ``TOTAL_PAIRS`` bounds the grid. Rows beyond ``ROTATE_ROWS``
+    copy through unchanged, so a key launch can leave the trailing
+    object-pointer keys untouched without a separate concatenate.
+
+    ``ensure_row_contiguous`` makes MLX copy noncontiguous inputs into logical
+    row-major order before launch. Every thread owns one adjacent pair, so the
+    guarded grid covers the output exactly once.
+    """
+    return mx.fast.metal_kernel(
+        name="medsam2_rope_fp32",
+        input_names=["inp", "cosb", "sinb"],
+        output_names=["out"],
+        header="#pragma clang fp contract(off)\n",
+        compile_options={"math_mode": "safe"},
+        source="""
+            uint i = thread_position_in_grid.x;
+            if (i >= TOTAL_PAIRS) return;
+            uint p = i % uint(HALF);
+            uint row = i / uint(HALF);
+            uint lk = row % uint(ROW_LEN);
+            uint j = 2u * i;
+            float real = inp[j];
+            float imag = inp[j + 1];
+            if (lk < uint(ROTATE_ROWS)) {
+                uint c = (lk % uint(TABLE_ROWS)) * uint(HALF) + p;
+                float co = cosb[c];
+                float si = sinb[c];
+                float rec = real * co;
+                float ims = imag * si;
+                float res = real * si;
+                float imc = imag * co;
+                out[j] = rec - ims;
+                out[j + 1] = res + imc;
+            } else {
+                out[j] = real;
+                out[j + 1] = imag;
+            }
+        """,
+    )
+
+
+def _launch_rope(x: array, cos: array, sin: array, rotate_rows: int) -> array:
+    """Rotate ``rotate_rows`` positions per input row; copy the rest through.
+
+    ``rotate_rows`` is measured within one ``ROW_LEN`` input row. The table is
+    indexed modulo its row count, reproducing a materialized ``mx.tile`` for
+    repeated key grids and the identity mapping for query grids.
+    """
+    from mlx.core import gpu
+
+    total_pairs = x.size // 2
+    return _rope_kernel()(
+        inputs=[x, cos, sin],
+        template=[
+            ("HALF", x.shape[-1] // 2),
+            ("ROW_LEN", x.shape[-2]),
+            ("TABLE_ROWS", cos.shape[0]),
+            ("ROTATE_ROWS", rotate_rows),
+            ("TOTAL_PAIRS", total_pairs),
+        ],
+        grid=(total_pairs, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[tuple(x.shape)],
+        output_dtypes=[mx.float32],
+        stream=gpu,
+    )[0]
+
+
+
+def _can_fuse_rope(x: array, cos: array, sin: array, rows: int) -> bool:
+    """Select the bounded FP32 kernel; other inputs retain native MLX semantics."""
+    return (
+        x.ndim >= 2 and 0 < x.size <= 2**31 - 1 and x.shape[-1] % 2 == 0
+        and x.dtype == cos.dtype == sin.dtype == mx.float32
+        and cos.ndim == 2 and cos.shape[0] > 0
+        and cos.shape == sin.shape and cos.shape[1] == x.shape[-1] // 2
+        and 0 < rows <= x.shape[-2] and rows % cos.shape[0] == 0
+    )
+
+
 def apply_rope(x: array, cos: array, sin: array) -> array:
     """Rotate adjacent (real, imaginary) channel pairs; ``x`` is (..., L, D)."""
+    if (
+        x.ndim >= 2 and cos.ndim == 2 and cos.shape[0] == x.shape[-2]
+        and _can_fuse_rope(x, cos, sin, x.shape[-2])
+    ):
+        return _launch_rope(x, cos, sin, x.shape[-2])
     pairs = mx.reshape(x, (*x.shape[:-1], -1, 2))
     real, imag = pairs[..., 0], pairs[..., 1]
     rotated = mx.stack([real * cos - imag * sin, real * sin + imag * cos], axis=-1)
     return mx.reshape(rotated, x.shape)
+
+
+def apply_rope_keys(k: array, cos: array, sin: array, rows: int) -> array:
+    """Rotate whole spatial grids and copy trailing pointer keys unchanged.
+
+    The attention caller validates ``rows`` against the query grid and exclusion
+    count. FP32 indexes repeated tables modulo their length in one Metal launch;
+    other dtypes retain the native MLX rotation, tile and concatenate sequence.
+    """
+    if _can_fuse_rope(k, cos, sin, rows):
+        return _launch_rope(k, cos, sin, rows)
+    repeats = rows // cos.shape[0]
+    if repeats != 1:
+        cos, sin = mx.tile(cos, (repeats, 1)), mx.tile(sin, (repeats, 1))
+    rotated = apply_rope(k[..., :rows, :], cos, sin)
+    return mx.concatenate([rotated, k[..., rows:, :]], axis=-2) if rows < k.shape[-2] else rotated
+
+
+@lru_cache(maxsize=1)
+def _fill_holes_kernel() -> MetalKernel:
+    """Build the bounded 8-connected hole-fill kernel.
+
+    Each background pixel flood-fills its own component and stops at
+    ``MAX_AREA + 1`` pixels, so a thread visits at most ``MAX_AREA`` pixels and
+    fills only when the whole component fits. A component of at most
+    ``MAX_AREA`` pixels is always discovered completely. Background is tested
+    on the IEEE bit pattern: Metal float comparisons flush subnormals, which
+    would turn a positive subnormal logit into background.
+    """
+    return mx.fast.metal_kernel(
+        name="medsam2_fill_holes_fp32",
+        input_names=["inp"],
+        output_names=["out"],
+        header="""
+            // v <= 0 for +-0 and negative non-NaN values, subnormals included.
+            inline bool medsam2_background(float v) {
+                uint b = as_type<uint>(v);
+                uint mag = b & 0x7fffffffu;
+                return mag == 0u || ((b >> 31) != 0u && mag <= 0x7f800000u);
+            }
+        """,
+        source="""
+            uint i = thread_position_in_grid.x;
+            if (i >= uint(PLANES * H * W)) return;
+            float v = inp[i];
+            if (!medsam2_background(v)) { out[i] = v; return; }
+            uint base = (i / uint(H * W)) * uint(H * W);
+            int qy[MAX_AREA];
+            int qx[MAX_AREA];
+            qy[0] = int((i - base) / uint(W));
+            qx[0] = int((i - base) % uint(W));
+            int count = 1;
+            bool small = true;
+            for (int head = 0; head < count && small; ++head) {
+                int cy = qy[head], cx = qx[head];
+                for (int dy = -1; dy <= 1 && small; ++dy) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        int ny = cy + dy, nx = cx + dx;
+                        if ((dy == 0 && dx == 0) || ny < 0 || ny >= H || nx < 0 || nx >= W) {
+                            continue;
+                        }
+                        if (!medsam2_background(inp[base + uint(ny * W + nx)])) continue;
+                        bool seen = false;
+                        for (int k = 0; k < count; ++k) {
+                            if (qy[k] == ny && qx[k] == nx) { seen = true; break; }
+                        }
+                        if (seen) continue;
+                        if (count == MAX_AREA) { small = false; break; }
+                        qy[count] = ny;
+                        qx[count] = nx;
+                        ++count;
+                    }
+                }
+            }
+            out[i] = small ? 0.1f : v;
+        """,
+    )
+
+
+def fill_small_holes_fp32(scores: array, max_area: int) -> array:
+    """Metal equivalent of ``video_predictor.fill_small_holes`` for FP32 (..., H, W).
+
+    Background components (score <= 0, 8-connected) of at most ``max_area``
+    pixels become ``0.1``; other values, NaN included, are copied unchanged.
+    The output is bit-identical to the SciPy host reference, and avoids a
+    device-to-host round trip inside each tracked frame.
+
+    Raises:
+        ValueError: ``scores`` is not FP32 with at least two dimensions,
+            ``max_area`` is not positive, or the grid exceeds 32-bit indexing.
+    """
+    from mlx.core import gpu
+
+    if scores.dtype != mx.float32 or scores.ndim < 2:
+        raise ValueError("Metal hole filling requires FP32 scores with shape (..., H, W)")
+    if max_area < 1:
+        raise ValueError("Metal hole filling requires a positive max_area")
+    if not 0 < scores.size <= 2**31 - 1:
+        raise ValueError("Metal hole filling requires a nonempty grid under 2**31 elements")
+    height, width = scores.shape[-2:]
+    return _fill_holes_kernel()(
+        inputs=[scores],
+        template=[
+            ("PLANES", math.prod(scores.shape[:-2])),
+            ("H", height), ("W", width), ("MAX_AREA", max_area),
+        ],
+        grid=(scores.size, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[tuple(scores.shape)],
+        output_dtypes=[mx.float32],
+        stream=gpu,
+    )[0]
+
 
 
 # --- PyTorch-compatible interpolation -------------------------------------------------

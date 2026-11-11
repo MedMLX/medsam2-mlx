@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast, overload
 
 if TYPE_CHECKING:
-    from mlx.core import ThreadLocalStream, array
+    from mlx.core import array
 import numpy as np
 from medmlx_core.errors import AssetNotReadyError
 
@@ -20,9 +20,7 @@ from medsam2_mlx._types import (
     HostArray,
     ImageFeatures,
     MemoryTensor,
-    OutputBanks,
     PackedBFloat16,
-    PointInputs,
     SessionState,
     Tensor,
 )
@@ -59,13 +57,12 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
     the original slice size given to ``init_state``. Foreground is logit > 0, the
     threshold ``medmlx.mask_result`` applies. Set
     ``inference_state["keep_image_features"] = True`` to cache every visited frame's
-    backbone output instead of only the latest one (faster re-visits, more memory).
+    backbone output instead of only the latest and prompted ones
+    (faster re-visits, more memory).
     On a one-frame session, a point correction after that frame has been tracked can
     produce nonfinite pointer positions; the predictor raises ``ValueError`` when
     its per-frame output check detects nonfinite values.
     """
-
-    _prefetch_stream: ThreadLocalStream | None = None
 
     def init_state(
         self,
@@ -145,54 +142,48 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
     ) -> ImageFeatures:
         """Cache requested frame features and broadcast them for the object batch.
 
-        Without ``keep_image_features`` the cache holds this frame and the frame
-        prefetched for the next propagation step, if any.
+        Without ``keep_image_features`` the cache keeps the requested frame and frames
+        that currently carry prompts, and drops the rest, including a prefetched frame
+        that was not requested. Prompted frames are revisited by corrections and by
+        reseeding after ``reset_state``; features are deterministic, so reuse does not
+        change outputs.
         """
         cache = inference_state["cached_features"]
-        if frame_idx not in cache:
-            mx = import_mlx()
-            backbone = self._compute_image_feature(inference_state, frame_idx)
-            mx.eval(backbone["backbone_fpn"], backbone["vision_pos_enc"])
+        backbone = cache.get(frame_idx)
+        if backbone is None:
+            backbone = self._encode_frame(inference_state, frame_idx)
+        if inference_state.get("keep_image_features"):
             cache[frame_idx] = backbone
-        if not inference_state.get("keep_image_features"):
-            keep = {frame_idx, inference_state.get("prefetched_frame_idx")}
-            inference_state["cached_features"] = {
-                index: value for index, value in cache.items() if index in keep
+        else:
+            prompted = {
+                index
+                for inputs in (
+                    *inference_state["point_inputs_per_obj"].values(),
+                    *inference_state["mask_inputs_per_obj"].values(),
+                )
+                for index in inputs
             }
+            kept = {index: cache[index] for index in prompted if index in cache}
+            kept[frame_idx] = backbone
+            inference_state["cached_features"] = kept
         return super()._get_image_feature(inference_state, frame_idx, batch_size)
 
     def _prefetch_image_feature(self, inference_state: SessionState, frame_idx: int) -> None:
-        """Start encoding the next propagation frame on a separate GPU stream.
+        """Start encoding the next frame to propagate, keeping it beside the current one."""
+        cache = inference_state["cached_features"]
+        if frame_idx not in cache:
+            cache[frame_idx] = self._encode_frame(inference_state, frame_idx)
 
-        Image features depend only on the frame, so the encoder for frame t+1 can run
-        while frame t is tracked and its masks are post-processed on the host. MLX
-        orders the default stream's later reads of these features after this stream's
-        work. The frame is read, and a host frame validated, one step early.
-        """
-        if frame_idx in inference_state["cached_features"]:
-            return
-        mx = import_mlx()
-        if self._prefetch_stream is None:
-            # Streams are bound to the creating thread; a thread-local stream lets a
-            # predictor be driven from different threads.
-            self._prefetch_stream = mx.new_thread_local_stream(mx.gpu)
-        with mx.stream(self._prefetch_stream):
-            backbone = self._compute_image_feature(inference_state, frame_idx)
-            mx.async_eval(backbone["backbone_fpn"], backbone["vision_pos_enc"])
-        inference_state["cached_features"][frame_idx] = backbone
-        inference_state["prefetched_frame_idx"] = frame_idx
+    def _encode_frame(self, inference_state: SessionState, frame_idx: int) -> ImageFeatures:
+        """Queue one frame's encoder graph on Metal without waiting for it.
 
-    def _overlap_next_frame(
-        self, inference_state: SessionState, pending: list[array], frame_idx: int
-    ) -> None:
-        """Submit this frame's tracking, then prepare and encode the next frame.
-
-        Submitting first lets the GPU track this frame while the host reads and
-        normalizes the next one and builds its encoder graph.
+        Evaluating the encoder as its own batch keeps its intermediates out of the
+        tracking graph; later frame work waits for it in stream order.
         """
         mx = import_mlx()
-        mx.async_eval(*pending)
-        self._prefetch_image_feature(inference_state, frame_idx)
+        backbone = self._compute_image_feature(inference_state, frame_idx)
+        mx.async_eval(backbone["backbone_fpn"], backbone["vision_pos_enc"])
+        return backbone
 
     def _store_tensor(self, inference_state: SessionState, value: Tensor) -> Tensor:
         """Offload state tensors to host memory when the session requests it."""
@@ -209,46 +200,35 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
             return PackedBFloat16(np.array(value.view(mx.uint16), dtype=np.uint16))
         return value
 
-    def _run_single_frame_inference(
+    def _finish_frame(
         self,
         inference_state: SessionState,
-        output_dict: OutputBanks,
-        frame_idx: int,
-        batch_size: int,
-        is_init_cond_frame: bool,
-        point_inputs: PointInputs | None,
-        mask_inputs: array | None,
-        reverse: bool,
-        run_mem_encoder: bool,
-        prev_sam_mask_logits: array | None = None,
-        prefetch_frame_idx: int | None = None,
-    ) -> tuple[FrameOutput, array]:
-        """Evaluate a tracked frame and reject nonfinite masks, pointers or memory."""
+        frame: tuple[FrameOutput, array] | None,
+        outputs: Sequence[array],
+        next_frame_idx: int | None,
+    ) -> None:
+        """Evaluate a frame with its outputs and reject nonfinite masks, pointers or memory.
+
+        The frame, its finite checks and ``outputs`` form one Metal batch. The next
+        frame's encoder is queued behind it before the host waits, so the GPU keeps
+        working while Python validates, returns this frame and builds the next one.
+        A nonfinite value still raises before the frame is stored or returned.
+        """
         mx = import_mlx()
-        compact, pred_masks = super()._run_single_frame_inference(
-            inference_state,
-            output_dict,
-            frame_idx,
-            batch_size,
-            is_init_cond_frame,
-            point_inputs,
-            mask_inputs,
-            reverse,
-            run_mem_encoder,
-            prev_sam_mask_logits,
-            prefetch_frame_idx,
-        )
-        arrays = [pred_masks, compact["obj_ptr"], compact["object_score_logits"]]
-        if compact["maskmem_features"] is not None:
-            arrays.append(native_memory(compact["maskmem_features"]))
-        # MLX is lazy: evaluate here so each frame's work finishes before the next one
-        # and non-finite output is caught at the frame that produced it. One combined
-        # flag keeps this to a single host synchronization per frame.
-        finite = mx.all(mx.stack([mx.all(mx.isfinite(value)) for value in arrays]))
-        mx.eval(*arrays, finite)
-        if not finite.item():
+        arrays: list[array] = []
+        if frame is not None:
+            compact, pred_masks = frame
+            arrays = [pred_masks, compact["obj_ptr"], compact["object_score_logits"]]
+            if compact["maskmem_features"] is not None:
+                arrays.append(native_memory(compact["maskmem_features"]))
+        finite = [mx.all(mx.isfinite(value)) for value in arrays]
+        mx.async_eval(*arrays, *outputs, *finite)
+        # Host-resident frames are validated when read; reading ahead would raise
+        # the next frame's error before this one is returned.
+        if next_frame_idx is not None and not inference_state["offload_video_to_cpu"]:
+            self._prefetch_image_feature(inference_state, next_frame_idx)
+        if not all(bool(flag.item()) for flag in finite):
             raise ValueError("MedSAM2 MLX produced nonfinite output")
-        return compact, pred_masks
 
     @staticmethod
     def _host(masks: Tensor) -> FloatArray:

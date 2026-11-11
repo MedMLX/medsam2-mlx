@@ -73,18 +73,23 @@ def rope_models() -> tuple[TorchRuntime, CoreRuntime, SourceRoPE, RoPEAttention]
     return torch, mx, expected, actual
 
 
-@pytest.mark.parametrize("memory_grids", [1, 2, 3, 7])
-@pytest.mark.parametrize("pointer_tokens", [0, 4, 12])
+@pytest.mark.parametrize(
+    ("memory_grids", "pointer_tokens", "query_side"),
+    [(grids, pointers, 4) for grids in (1, 2, 3, 7) for pointers in (0, 4, 12)]
+    + [pytest.param(3, 4, 3, id="three-by-three-query")],
+)
 def test_temporal_rope_matches_pinned_source(
     rope_models: tuple[TorchRuntime, CoreRuntime, SourceRoPE, RoPEAttention],
     memory_grids: int,
     pointer_tokens: int,
+    query_side: int,
 ) -> None:
     """Rotate spatial memory grids while preserving appended object pointers."""
     torch, mx, expected, actual = rope_models
     rng = np.random.default_rng(715 + pointer_tokens)
-    query = rng.standard_normal((1, 16, 256)).astype(np.float32)
-    key = rng.standard_normal((1, 16 * memory_grids + pointer_tokens, 64)).astype(np.float32)
+    tokens = query_side**2
+    query = rng.standard_normal((1, tokens, 256)).astype(np.float32)
+    key = rng.standard_normal((1, tokens * memory_grids + pointer_tokens, 64)).astype(np.float32)
     value = rng.standard_normal(key.shape).astype(np.float32)
     with torch.inference_mode():
         oracle = expected(
@@ -98,7 +103,7 @@ def test_temporal_rope_matches_pinned_source(
     )
     mx.eval(result)
     observed = cast(FloatArray, np.asarray(result))
-    assert observed.shape == oracle.shape == (1, 16, 256)
+    assert observed.shape == oracle.shape == (1, tokens, 256)
     assert observed.dtype == oracle.dtype == np.float32
     assert np.isfinite(observed).all()
     np.testing.assert_allclose(observed, oracle, rtol=_RTOL, atol=_ATOL)

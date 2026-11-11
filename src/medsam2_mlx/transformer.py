@@ -12,7 +12,14 @@ if TYPE_CHECKING:
 
 import math
 
-from medsam2_mlx._ops import MLP, LayerNorm, apply_rope, axial_rope, relu
+from medsam2_mlx._ops import (
+    MLP,
+    LayerNorm,
+    apply_rope,
+    apply_rope_keys,
+    axial_rope_device,
+    relu,
+)
 from medsam2_mlx._runtime import mx, nn
 
 
@@ -102,10 +109,9 @@ class RoPEAttention(Attention):
         side = math.isqrt(q.shape[-2])
         if not side or side * side != q.shape[-2]:
             raise ValueError("RoPE attention requires a nonempty square query grid")
-        cos_np, sin_np = axial_rope(
+        cos, sin = axial_rope_device(
             self.internal_dim // self.num_heads, side, side, self.rope_theta
         )
-        cos, sin = mx.array(cos_np), mx.array(sin_np)
         if q.shape[-2] != k.shape[-2] and not self.rope_k_repeat:
             raise ValueError("Query and key lengths differ without rope_k_repeat")
         q = apply_rope(q, cos, sin)
@@ -115,16 +121,7 @@ class RoPEAttention(Attention):
                 raise ValueError("RoPE spatial keys must contain whole query grids")
             if not self.rope_k_repeat and num_k_rope != q.shape[-2]:
                 raise ValueError("RoPE spatial keys must match the query grid")
-            k_rope = k[:, :, :num_k_rope]
-            if self.rope_k_repeat:
-                repeats = num_k_rope // q.shape[-2]
-                cos, sin = mx.tile(cos, (repeats, 1)), mx.tile(sin, (repeats, 1))
-            k_rope = apply_rope(k_rope, cos, sin)
-            k = (
-                mx.concatenate([k_rope, k[:, :, num_k_rope:]], axis=2)
-                if num_k_exclude_rope
-                else k_rope
-            )
+            k = apply_rope_keys(k, cos, sin, num_k_rope)
         return self._attend(q, k, v)
 
 

@@ -29,7 +29,7 @@ from typing import Literal, cast, overload
 
 import numpy as np
 
-from medsam2_mlx._ops import interpolate_bilinear
+from medsam2_mlx._ops import fill_small_holes_fp32, interpolate_bilinear
 from medsam2_mlx._runtime import mx
 from medsam2_mlx._storage import native_memory
 from medsam2_mlx._types import (
@@ -56,7 +56,8 @@ def fill_small_holes(scores: FloatArray, max_area: int = 8) -> FloatArray:
     components kernel is unavailable on macOS) for (..., H, W) score arrays. Background
     is score <= 0; filled pixels become a small positive logit, i.e. foreground.
     Small components touching the image boundary are filled too.
-    Returns a copy. Applied by the predictor to the 128 x 128 low-resolution logits.
+    Returns a copy. The predictor applies the equivalent Metal kernel to its
+    128 x 128 low-resolution logits.
     """
     ndimage = cast(ConnectedComponents, import_module("scipy.ndimage"))
     result = scores.copy()
@@ -309,7 +310,7 @@ class SAM2VideoPredictor:
             # Refining a frame feeds its previous logits back as a mask prompt, clipped
             # to [-32, 32] as upstream does.
             prev_sam_mask_logits = mx.clip(mx.array(prev_out["pred_masks"]), -32.0, 32.0)
-        current_out, _ = self._run_single_frame_inference(
+        current_out, pred_masks = self._run_single_frame_inference(
             inference_state,
             obj_output_dict,
             frame_idx,
@@ -321,6 +322,7 @@ class SAM2VideoPredictor:
             run_mem_encoder=False,
             prev_sam_mask_logits=prev_sam_mask_logits,
         )
+        self._finish_frame(inference_state, (current_out, pred_masks), (), None)
         obj_temp_output_dict[storage_key][frame_idx] = current_out
         consolidated = self._consolidate_temp_output_across_obj(
             inference_state,
@@ -377,7 +379,7 @@ class SAM2VideoPredictor:
         obj_temp_output_dict = inference_state["temp_output_dict_per_obj"][obj_idx]
         is_cond = is_init_cond_frame
         storage_key = "cond_frame_outputs" if is_cond else "non_cond_frame_outputs"
-        current_out, _ = self._run_single_frame_inference(
+        current_out, pred_masks = self._run_single_frame_inference(
             inference_state,
             obj_output_dict,
             frame_idx,
@@ -388,6 +390,7 @@ class SAM2VideoPredictor:
             reverse=reverse,
             run_mem_encoder=False,
         )
+        self._finish_frame(inference_state, (current_out, pred_masks), (), None)
         obj_temp_output_dict[storage_key][frame_idx] = current_out
         consolidated = self._consolidate_temp_output_across_obj(
             inference_state,
@@ -642,18 +645,15 @@ class SAM2VideoPredictor:
                 next_frame_idx in frames for frames in consolidated_frame_inds.values()
             ):
                 next_frame_idx = None
+            frame: tuple[FrameOutput, array] | None = None
             if frame_idx in consolidated_frame_inds["cond_frame_outputs"]:
                 storage_key = "cond_frame_outputs"
                 current_out = output_dict[storage_key][frame_idx]
                 pred_masks = current_out["pred_masks"]
-                if next_frame_idx is not None:
-                    self._prefetch_image_feature(inference_state, next_frame_idx)
             elif frame_idx in consolidated_frame_inds["non_cond_frame_outputs"]:
                 storage_key = "non_cond_frame_outputs"
                 current_out = output_dict[storage_key][frame_idx]
                 pred_masks = current_out["pred_masks"]
-                if next_frame_idx is not None:
-                    self._prefetch_image_feature(inference_state, next_frame_idx)
             else:
                 storage_key = "non_cond_frame_outputs"
                 current_out, pred_masks = self._run_single_frame_inference(
@@ -666,14 +666,17 @@ class SAM2VideoPredictor:
                     mask_inputs=None,
                     reverse=reverse,
                     run_mem_encoder=True,
-                    prefetch_frame_idx=next_frame_idx,
                 )
+                frame = (current_out, pred_masks)
+            video_res_masks = self._get_orig_video_res_output(inference_state, pred_masks)
+            self._finish_frame(inference_state, frame, (video_res_masks,), next_frame_idx)
+            if frame is not None:
                 output_dict[storage_key][frame_idx] = current_out
             self._add_output_per_object(inference_state, frame_idx, current_out, storage_key)
             inference_state["frames_already_tracked"][frame_idx] = {"reverse": reverse}
             if not self.retain_history:
                 self._prune_history(inference_state, frame_idx, reverse)
-            yield frame_idx, obj_ids, self._get_orig_video_res_output(inference_state, pred_masks)
+            yield frame_idx, obj_ids, video_res_masks
 
     def _prune_history(self, state: SessionState, frame_idx: int, reverse: bool) -> None:
         """Keep every prompt/correction and only the next frame's spatial and pointer lookbacks."""
@@ -854,12 +857,20 @@ class SAM2VideoPredictor:
     def _prefetch_image_feature(self, inference_state: SessionState, frame_idx: int) -> None:
         """Hint that propagation will track ``frame_idx`` next; the base class ignores it."""
 
-    def _overlap_next_frame(
-        self, inference_state: SessionState, pending: list[array], frame_idx: int
+    def _finish_frame(
+        self,
+        inference_state: SessionState,
+        frame: tuple[FrameOutput, array] | None,
+        outputs: Sequence[array],
+        next_frame_idx: int | None,
     ) -> None:
-        """Hint that ``pending`` outputs are built and ``frame_idx`` is tracked next.
+        """Complete one frame before its output is stored or returned.
 
-        Called before the host first reads this frame's outputs; the base class ignores it.
+        ``frame`` is a newly predicted ``(compact output, device mask logits)`` pair,
+        or ``None`` for a stored output. ``outputs`` are derived arrays the caller
+        receives, and ``next_frame_idx`` the next frame propagation will predict.
+        The lazy base class does nothing; subclasses may evaluate, validate and
+        start encoding ``next_frame_idx``.
         """
 
     def _get_image_feature(
@@ -883,10 +894,8 @@ class SAM2VideoPredictor:
         }
 
     def _fill_holes(self, pred_masks: array) -> array:
-        """Fill configured small holes in mask logits and return them on MLX."""
-        return mx.array(
-            fill_small_holes(cast(FloatArray, np.asarray(pred_masks)), self.fill_hole_area)
-        )
+        """Fill configured small holes in mask logits on Metal (see ``fill_small_holes``)."""
+        return fill_small_holes_fp32(pred_masks, self.fill_hole_area)
 
     def _run_single_frame_inference(
         self,
@@ -900,13 +909,8 @@ class SAM2VideoPredictor:
         reverse: bool,
         run_mem_encoder: bool,
         prev_sam_mask_logits: array | None = None,
-        prefetch_frame_idx: int | None = None,
     ) -> tuple[FrameOutput, array]:
-        """Track one frame and store its compact masks, pointers and optional memory.
-
-        ``prefetch_frame_idx`` names the frame propagation tracks next, if it needs
-        inference; it is passed to ``_overlap_next_frame`` once this frame's graph is built.
-        """
+        """Track one frame and store its compact masks, pointers and optional memory."""
         backbone = self._get_image_feature(inference_state, frame_idx, batch_size)
         if point_inputs is not None and mask_inputs is not None:
             raise ValueError("Points and a mask cannot prompt the same frame together")
@@ -926,11 +930,6 @@ class SAM2VideoPredictor:
         if maskmem_features is not None:
             # Upstream stores spatial memory in BF16, also for FP32 inference.
             maskmem_features = maskmem_features.astype(mx.bfloat16)
-        if prefetch_frame_idx is not None:
-            pending = [current["pred_masks"], current["obj_ptr"], current["object_score_logits"]]
-            if maskmem_features is not None:
-                pending.append(maskmem_features)
-            self._overlap_next_frame(inference_state, pending, prefetch_frame_idx)
         stored_memory = (
             None
             if maskmem_features is None

@@ -558,7 +558,6 @@ class SessionState(TypedDict):
     tracking_has_started: bool
     frames_already_tracked: dict[int, FrameTracking]
     keep_image_features: NotRequired[bool]
-    prefetched_frame_idx: NotRequired[int]
     history_cursor: NotRequired[tuple[int, bool]]
 
 
