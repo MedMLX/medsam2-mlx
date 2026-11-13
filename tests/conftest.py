@@ -23,8 +23,7 @@ from tests.reference_cases import (
     UPSTREAM_REVISION,
 )
 from tests.reference_types import TorchRuntime
-
-FIXTURE = Path(__file__).parent / "fixtures" / "reference_small.npz"
+from tests.runner_cases import reference_path
 
 
 def small_config() -> Sam2Config:
@@ -67,18 +66,20 @@ def small_config() -> Sam2Config:
 @pytest.fixture(scope="session")
 def reference() -> dict[str, HostArray]:
     """Load the saved small-graph source reference arrays."""
-    with np.load(FIXTURE, allow_pickle=False) as data:
+    with np.load(reference_path("reference_small.npz"), allow_pickle=False) as data:
         assert data["recorded_platform"].item() == REFERENCE_PLATFORM
         assert data["meta_upstream_revision"].item() == UPSTREAM_REVISION
+        assert data["ct_source"].item() == "HCC-TACE-Seg HCC_063 contrast CT"
         return {key: data[key] for key in data.files}
 
 
 @pytest.fixture(scope="session")
 def state_dict(reference: dict[str, HostArray]) -> dict[str, HostArray]:
     """Regenerate the pinned source graph's seeded parameters for parity tests."""
-    source = os.environ.get("MEDSAM2_SOURCE_ROOT")
-    if not source:
-        pytest.skip("Set MEDSAM2_SOURCE_ROOT to the pinned upstream MedSAM2 checkout")
+    default = Path.home() / ".cache" / "medmlx" / "test-data" / "medsam2-source"
+    source = Path(os.environ.get("MEDSAM2_SOURCE_ROOT", str(default)))
+    if not source.is_dir():
+        pytest.skip("Provide the pinned upstream MedSAM2 checkout via MEDSAM2_SOURCE_ROOT")
     from tests.upstream_reference import import_upstream, seeded_state
 
     torch = cast(TorchRuntime, import_module("torch"))
@@ -86,7 +87,7 @@ def state_dict(reference: dict[str, HostArray]) -> dict[str, HostArray]:
     assert str(torch.__version__) == expected_version, (
         f"Reference parameters require Torch {expected_version}; found {torch.__version__}"
     )
-    state = seeded_state(import_upstream(Path(source).resolve()), torch)
+    state = seeded_state(import_upstream(source.resolve()), torch)
     return {name: cast(HostArray, value.numpy()) for name, value in state.items()}
 
 

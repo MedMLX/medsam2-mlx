@@ -1,4 +1,4 @@
-"""Synthetic volumes and prompts shared by the runner recorder and tests.
+"""Real-image crops and prompts shared by the runner recorder and tests.
 
 ``write_seeded_weights`` imports MLX only to save arrays; parameter shapes come
 from the upstream recording.
@@ -13,10 +13,10 @@ if TYPE_CHECKING:
         BoxCoordinates,
         HostArray,
         NiftiRuntime,
-        NumericArray,
         Propagation,
     )
 
+import os
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
@@ -48,65 +48,64 @@ class RunnerCase(TypedDict):
 WEIGHT_SEED = 2026
 
 
-def _affine(seed: int) -> HostArray:
-    """Generate a seeded synthetic spatial affine for runner cases."""
-    rng = np.random.default_rng(seed)
-    angle = rng.uniform(-0.4, 0.4)
-    rotation = np.array(
-        [[np.cos(angle), -np.sin(angle), 0.0], [np.sin(angle), np.cos(angle), 0.0], [0, 0, 1]]
-    )
-    affine = np.eye(4)
-    affine[:3, :3] = rotation @ np.diag(rng.uniform(0.5, 3.0, 3))
-    affine[0] *= -1
-    affine[:3, 3] = rng.uniform(-150, 150, 3)
-    return affine
+def reference_path(name: str) -> Path:
+    """Find regenerated reference arrays outside the repository."""
+    default = Path(__file__).resolve().parents[1] / "work" / "real-reference"
+    directory = os.environ.get("MEDMLX_TEST_REFERENCES", str(default))
+    return Path(directory) / name
 
 
-def _texture(shape: tuple[int, ...], seed: int) -> NumericArray:
-    """Generate seeded smooth texture with noise for synthetic images."""
-    rng = np.random.default_rng(seed)
-    grid = np.meshgrid(*[np.linspace(0, 3, size) for size in shape], indexing="ij")
-    smooth = np.sin(grid[0] * 2.1) * np.cos(grid[1] * 1.7)
-    if len(shape) == 3:
-        smooth = smooth + 0.3 * np.sin(grid[2] * 2.5)
-    return smooth + rng.normal(0, 0.15, shape)
-
-
-# name: (seed, shape in NIfTI voxel order, dtype, (slope, intercept) or None, qform only)
-VOLUMES: dict[str, tuple[int, tuple[int, ...], str, tuple[float, float] | None, bool]] = {
-    "ct3": (12, (30, 40, 3), "int16", (1.0, -1024.0), False),
-    "ct5_tenth": (13, (24, 20, 5), "int16", (0.1, -3.3), False),
-    # Seeded noise whose uint8 stack depends on ITK's float32 rescaling (3 voxels).
-    "tenth_noise": (17, (30, 32, 4), "int16", (0.1, -3.3), False),
-    "float32": (15, (16, 18, 4), "float32", None, False),
-    "uint8": (18, (20, 22, 3), "uint8", None, False),
-    "f64_scaled": (14, (14, 12, 2), "float64", (0.3, 1.1), False),
-    "slice2d": (16, (26, 34), "float32", None, False),
-    "z1": (19, (28, 24, 1), "int16", None, True),
-    "constant": (11, (10, 12, 2), "int16", None, False),
+# Case dimensions are in NIfTI voxel order; optional scaling tests NIfTI decoding.
+VOLUMES: dict[str, tuple[tuple[int, ...], str, tuple[float, float] | None, bool]] = {
+    "ct3": ((30, 40, 3), "int16", (1.0, -1024.0), False),
+    "ct5_tenth": ((24, 20, 5), "int16", (0.1, -3.3), False),
+    "ct_tenth": ((30, 32, 4), "int16", (0.1, -3.3), False),
+    "float32": ((16, 18, 4), "float32", None, False),
+    "uint8": ((20, 22, 3), "uint8", None, False),
+    "f64_scaled": ((14, 12, 2), "float64", (0.3, 1.1), False),
+    "slice2d": ((26, 34), "float32", None, False),
+    "z1": ((28, 24, 1), "int16", None, True),
+    "constant": ((10, 12, 2), "int16", None, False),
 }
 
 
 def write_volume(directory: Path, name: str) -> Path:
-    """Write one named synthetic NIfTI volume and return its path."""
+    """Write a real CT or chest X-ray crop in the case's NIfTI representation."""
+    import os
 
-    import nibabel as nib
+    import nibabel as nib_runtime
+    from PIL import Image
 
-    nib = cast("NiftiRuntime", nib)
-
-    seed, shape, dtype, scaling, qform_only = VOLUMES[name]
-    texture = _texture(shape, seed)
-    if name == "constant":
-        data = np.full(shape, 7, dtype=np.int16)
-    elif name == "tenth_noise":
-        data = np.random.default_rng(5).integers(0, 4000, shape).astype(np.int16)
-    elif dtype == "uint8":
-        data = np.clip((texture + 1.5) * 80, 0, 255).astype(np.uint8)
-    elif dtype == "int16":
-        data = np.clip((texture + 1.5) * 1200, 0, 4000).astype(np.int16)
+    nib = cast("NiftiRuntime", nib_runtime)
+    shape, dtype, scaling, qform_only = VOLUMES[name]
+    if name == "slice2d":
+        default = Path.home() / ".cache" / "medmlx" / "test-data" / "chest_xray.jpg"
+        source = os.environ.get("MEDMLX_TEST_XRAY", str(default))
+        with Image.open(source) as image:
+            data = np.asarray(image.convert("L"))[200:200 + shape[1], 200:200 + shape[0]].T
+        affine = np.eye(4)
     else:
-        data = (texture * 300 - 40).astype(dtype)
-    image = nib.Nifti1Image(data, _affine(seed))
+        default = Path.home() / ".cache" / "medmlx" / "test-data" / "hcc_063_ct.nii.gz"
+        source = os.environ.get("MEDMLX_TEST_CT", str(default))
+        image = nib.load(source)
+        start = (0, 0, 40) if name == "constant" else (150, 250, 40)
+        data = np.asanyarray(image.dataobj)[
+            start[0]:start[0] + shape[0], start[1]:start[1] + shape[1],
+            start[2]:start[2] + shape[2],
+        ]
+        affine = np.asarray(image.affine, dtype=np.float64).copy()
+        affine[:3, 3] += affine[:3, :3] @ np.asarray(start)
+    if data.shape != shape:
+        raise ValueError(f"{name} crop has shape {data.shape}, expected {shape}")
+    if name == "constant" and np.ptp(data) != 0:
+        raise ValueError("The constant case requires the HCC_063 air crop")
+    if dtype == "uint8":
+        data = np.clip((data.astype(np.float32) + 200) * 255 / 500, 0, 255)
+    elif scaling is not None:
+        data = (data.astype(np.float64) - scaling[1]) / scaling[0]
+        if dtype == "int16":
+            data = np.rint(data)
+    image = nib.Nifti1Image(data.astype(dtype), affine)
     if scaling is not None:
         image.header.set_slope_inter(*scaling)
     if qform_only:
@@ -116,7 +115,6 @@ def write_volume(directory: Path, name: str) -> Path:
     path = directory / f"{name}.nii.gz"
     nib.save(image, path)
     return path
-
 
 def write_mask(
     directory: Path,
@@ -292,7 +290,7 @@ def write_seeded_weights(path: Path, seed: int = WEIGHT_SEED) -> Path:
 
     mx = import_mlx()
 
-    fixture = Path(__file__).resolve().parents[1] / "tests/fixtures/runner_reference.npz"
+    fixture = reference_path("runner_reference.npz")
     with np.load(fixture, allow_pickle=False) as data:
         shapes = {name: tuple(shape) for name, shape in json.loads(data["parameter_shapes"].item())}
     arrays = seeded_arrays(shapes, seed)

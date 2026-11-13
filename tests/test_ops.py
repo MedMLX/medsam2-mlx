@@ -11,6 +11,7 @@ from medsam2_mlx._ops import Conv2d, fill_small_holes_fp32, interpolate_bilinear
 from medsam2_mlx._runtime import mx
 from medsam2_mlx.mlx_model import resize_mask
 from medsam2_mlx.video_predictor import fill_small_holes
+from tests.real_images import xray_planes
 from tests.reference_types import FloatArray, TorchRuntime
 
 if TYPE_CHECKING:
@@ -28,7 +29,7 @@ def test_pointwise_convolution_padding_matches_torch(padding: int) -> None:
     """Compare pointwise convolution with and without padding to Torch."""
     torch = cast(TorchRuntime, pytest.importorskip("torch"))
     functional = cast(TorchConvolution, torch.nn.functional)
-    image = np.array([[[[1, 2], [3, 4]], [[5, 6], [7, 8]]]], dtype=np.float32)
+    image = xray_planes((1, 2, 2, 2))
     weights = np.array([[[[2]], [[-1]]], [[[1]], [[3]]]], dtype=np.float32)
     bias = np.array([0.5, -0.5], dtype=np.float32)
     expected = functional.conv2d(
@@ -63,7 +64,7 @@ def test_bilinear_geometry_and_strided_planes_match_torch(
 ) -> None:
     """Cover half-pixel boundaries, singleton axes, FP16 input and independently resized planes."""
     torch = cast(TorchRuntime, pytest.importorskip("torch"))
-    image = np.random.default_rng(17).normal(size=shape).astype(dtype)
+    image = xray_planes(shape).astype(dtype)
     source = torch.nn.functional.interpolate(
         torch.from_numpy(image.astype(np.float32).reshape(-1, 1, *shape[-2:])),
         size=target, mode="bilinear", align_corners=False, antialias=False,
@@ -86,7 +87,7 @@ def test_mask_antialias_resize_matches_torch(
 ) -> None:
     """Compare antialiased mask resizing with the Torch reference."""
     torch = cast(TorchRuntime, pytest.importorskip("torch"))
-    image = np.random.default_rng(17).normal(size=shape).astype(np.float32)
+    image = xray_planes(shape)
     source = torch.nn.functional.interpolate(
         torch.from_numpy(image), size=target, mode="bilinear", align_corners=False, antialias=True
     ).numpy()

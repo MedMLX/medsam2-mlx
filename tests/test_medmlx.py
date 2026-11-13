@@ -27,6 +27,7 @@ from medsam2_mlx._types import (
     RunnerPredictor,
     RunnerResult,
 )
+from tests.real_images import xray_planes
 from tests.reference_cases import REFERENCE_PLATFORM, UPSTREAM_REVISION
 from tests.runner_cases import (
     FAKE_RUNS,
@@ -34,21 +35,21 @@ from tests.runner_cases import (
     VOLUMES,
     RunnerCase,
     prepare_inputs,
+    reference_path,
     write_seeded_weights,
     write_volume,
 )
 
 nib: NiftiRuntime = cast(NiftiRuntime, _nib)
 
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
 @pytest.fixture(scope="module")
 def reference() -> dict[str, HostArray]:
     """Load runner fixtures and verify their recorded source revision and platform."""
-    with np.load(FIXTURES / "runner_reference.npz", allow_pickle=False) as data:
+    with np.load(reference_path("runner_reference.npz"), allow_pickle=False) as data:
         assert data["recorded_platform"].item() == REFERENCE_PLATFORM
         assert data["upstream_revision"].item() == UPSTREAM_REVISION
+        assert data["ct_source"].item() == "HCC-TACE-Seg HCC_063 contrast CT"
+        assert data["xray_source"].item() == "Wikimedia Commons normal PA chest radiograph"
         return {key: data[key] for key in data.files}
 
 
@@ -137,11 +138,13 @@ def test_run_with_seeded_network_matches_upstream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Compare seeded runner results with recorded upstream cases."""
-    fixture = FIXTURES / "runner_run.npz"
+    fixture = reference_path("runner_run.npz")
     prefix = f"{'post' if postprocessing else 'raw'}/{name}/"
     with np.load(fixture, allow_pickle=False) as data:
         assert data["recorded_platform"].item() == REFERENCE_PLATFORM
         assert data["upstream_revision"].item() == UPSTREAM_REVISION
+        assert data["ct_source"].item() == "HCC-TACE-Seg HCC_063 contrast CT"
+        assert data["xray_source"].item() == "Wikimedia Commons normal PA chest radiograph"
         expected = {
             key.removeprefix(prefix): data[key] for key in data.files if key.startswith(prefix)
         }
@@ -337,7 +340,7 @@ def test_stop_after_empty_ends_tracking_after_consecutive_empty_frames(
     session = medmlx.Session(
         predictor=cast("RunnerPredictor[None]", predictor),
         inference_state=None,
-        image_stack=np.zeros((8, 2, 2), np.uint8),
+        image_stack=(xray_planes((8, 2, 2)) * np.float32(255)).astype(np.uint8),
     )
     results = session.propagate(stop_after_empty=stop)
     assert predictor.produced == produced

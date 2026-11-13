@@ -20,7 +20,6 @@ import numpy as np
 UPSTREAM_REVISION = "332f30d420f1d1b08e2a79b3ae6a602458808383"
 REFERENCE_PLATFORM = "darwin-arm64"
 MODEL_SEED = 2207
-INPUT_SEED = 715
 
 
 # A reduced sam2.1_hiera_t512 graph: 64 px images, 4x4 top-level features, Hiera
@@ -71,10 +70,32 @@ VIDEO_WIDTH = 23
 
 
 def video_frames() -> FloatArray:
-    """Seeded standard-normal stand-in frames, float32 (VIDEO_FRAMES, 3, 64, 64)."""
-    rng = np.random.default_rng(INPUT_SEED)
+    """Prepare six consecutive HCC-TACE CT slices for the reduced graph."""
+    import os
+    from pathlib import Path
+
+    import nibabel as nib_runtime
+    from PIL import Image
+
+    from medsam2_mlx._types import NiftiRuntime
+
+    default = Path.home() / ".cache" / "medmlx" / "test-data" / "hcc_063_ct.nii.gz"
+    path = os.environ.get("MEDMLX_TEST_CT", str(default))
+    image = cast(NiftiRuntime, nib_runtime).load(path)
+    volume = np.asarray(image.dataobj, dtype=np.float32)
+    crop = volume[150:150 + VIDEO_WIDTH, 250:250 + VIDEO_HEIGHT, 40:40 + VIDEO_FRAMES]
+    stack = np.transpose(crop, (2, 1, 0))
+    if stack.shape != (VIDEO_FRAMES, VIDEO_HEIGHT, VIDEO_WIDTH):
+        raise ValueError(f"CT crop has unexpected shape {stack.shape}")
+    if stack.max() == stack.min():
+        raise ValueError("CT crop has no intensity variation")
+    scale = (stack - stack.min()) / (stack.max() - stack.min())
     size = SMALL["image_size"]
-    return rng.standard_normal((VIDEO_FRAMES, 3, size, size)).astype(np.float32)
+    resized = np.stack([
+        np.asarray(Image.fromarray(frame).resize((size, size), Image.Resampling.BILINEAR))
+        for frame in scale
+    ]).astype(np.float32)
+    return np.repeat(resized[:, None, :, :], 3, axis=1)
 
 
 class ScenarioState(TypedDict):
