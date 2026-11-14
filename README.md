@@ -40,7 +40,7 @@ from medsam2_mlx.medmlx import run
 
 result = run(
     image_path="ct.nii.gz", output_dir="out",
-    box_xyxy=[120, 140, 180, 200], frame_idx=40, propagation="both",
+    box_xyxy_pixels=[120, 140, 180, 200], frame_index=40, propagation="both",
 )
 print(result["outputs"])
 ```
@@ -58,10 +58,10 @@ four MedSAM2 checkpoints.
 | `image_path` | NIfTI CT volume or slice, `.npz` RECIST stack, or folder of `.jpg`/`.jpeg` frames |
 | `output_dir` | Directory for the outputs; created if missing |
 | `weights_path` | Optional folder containing `MedSAM2_CTLesion.safetensors`, or a `.safetensors` file |
-| `box_xyxy` | `[x_min, y_min, x_max, y_max]` on `frame_idx`; combinable with `points_xy` |
-| `points_xy`, `point_labels` | `[[x, y], ...]` on `frame_idx`, each labeled `1` foreground or `0` background |
+| `box_xyxy_pixels` | `[x_min, y_min, x_max, y_max]` pixels on `frame_index`; combinable with `points_xy_pixels` |
+| `points_xy_pixels`, `point_labels` | `[[x, y], ...]` pixels on `frame_index`, each labeled `1` foreground or `0` background |
 | `mask_path` | Binary seed NIfTI with the input's shape and affine, instead of a box or points |
-| `frame_idx`, `obj_id` | Zero-based prompt slice (default `0`) and positive object label (default `1`) |
+| `frame_index`, `obj_id` | Zero-based prompt slice (default `0`) and positive object label (default `1`) |
 | `prompts` | Prompts for several objects, replacing the single-object arguments |
 | `hu_window` | Optional `(lower, upper)` clip before min-max scaling to uint8 |
 | `propagation` | `"none"` (default), `"forward"`, `"reverse"` or `"both"` |
@@ -72,12 +72,12 @@ four MedSAM2 checkpoints.
 
 **Prompts**
 
-- For NIfTI, `frame_idx` uses the third voxel axis, and box and point coordinates use the
+- For NIfTI, `frame_index` uses the third voxel axis, and box and point coordinates use the
   first two stored voxel axes. Coordinates are checked for shape and finiteness but not
   clipped.
-- Each `prompts` entry is a mapping with a required `obj_id` and any of `frame_idx`,
-  `box_xyxy`, `points_xy`, `point_labels`, `mask_path`, `clear_old_points` and
-  `normalize_coords`. IDs must be unique and fit in uint16.
+- Each `prompts` entry is a mapping with a required `obj_id` and any of `frame_index`,
+  `box_xyxy_pixels`, `points_xy_pixels`, `point_labels`, `mask_path`, `clear_old_points` and
+  `normalize_coords`; other keys are rejected. IDs must be unique and fit in uint16.
 - With propagation, every prompt must be on the same frame. `"both"` resets and reseeds
   each object before the reverse pass, as the upstream CT examples do.
 
@@ -97,7 +97,10 @@ four MedSAM2 checkpoints.
   `medsam2_overlay.png` for single-slice inputs.
 - Where objects overlap, the later object wins. Masks are not reduced to their largest
   3D connected component, which upstream's CT script does for each lesion.
-- `run` returns `{"outputs": {...}, "details": {...}}`, with run metadata in `details`.
+- `run` returns `{"outputs": {...}, "artifacts": {...}, "details": {...}}`. `artifacts` marks
+  the mask as a label map (one `object <obj_id>` label per prompted object) on the input's
+  grid for NIfTI input, or in pixel space for `.npz` and frame-folder input; run metadata is
+  in `details`.
 - Invalid inputs raise `InvalidInputError`; missing or mismatched weights raise
   `AssetNotReadyError`; inference failures raise `ModelExecutionError`.
 

@@ -15,6 +15,7 @@ import nibabel as _nib
 import numpy as np
 import pytest
 from medmlx_core.errors import AssetNotReadyError, InvalidInputError
+from medmlx_core.outputs import validate_outputs
 from PIL import Image
 
 from medsam2_mlx import medmlx
@@ -42,6 +43,7 @@ from tests.runner_cases import (
 
 nib: NiftiRuntime = cast(NiftiRuntime, _nib)
 
+
 @pytest.fixture(scope="module")
 def reference() -> dict[str, HostArray]:
     """Load runner fixtures and verify their recorded source revision and platform."""
@@ -55,11 +57,11 @@ def reference() -> dict[str, HostArray]:
 
 def _arguments(run: RunnerCase, volume: Path, mask: Path | None) -> PromptedRunArguments:
     """Translate one runner case into run arguments; several objects go through ``prompts``."""
-    prompt: dict[str, object] = {"frame_idx": run["frame"], "obj_id": run.get("obj_id", 1)}
+    prompt: dict[str, object] = {"frame_index": run["frame"], "obj_id": run.get("obj_id", 1)}
     if "box" in run:
-        prompt["box_xyxy"] = list(run["box"])
+        prompt["box_xyxy_pixels"] = list(run["box"])
     if "points_xy" in run:
-        prompt["points_xy"] = [list(point) for point in run["points_xy"]]
+        prompt["points_xy_pixels"] = [list(point) for point in run["points_xy"]]
         prompt["point_labels"] = list(run.get("point_labels", ()))
     if mask is not None:
         prompt["mask_path"] = str(mask)
@@ -67,7 +69,11 @@ def _arguments(run: RunnerCase, volume: Path, mask: Path | None) -> PromptedRunA
     if "slice_range" in run:
         arguments["slice_range"] = list(run["slice_range"])
     extra = [
-        {"frame_idx": run["frame"], "obj_id": item["obj_id"], "box_xyxy": list(item["box"])}
+        {
+            "frame_index": run["frame"],
+            "obj_id": item["obj_id"],
+            "box_xyxy_pixels": list(item["box"]),
+        }
         for item in run.get("extra_objects", ())
     ]
     if extra:
@@ -85,6 +91,15 @@ def _check_outputs(
     assert set(outputs) == ({"mask", "overlay"} if expected["masks"].shape[0] == 1 else {"mask"})
     for path in outputs.values():
         assert Path(path).parent == output_dir.resolve()
+    _, artifacts = validate_outputs(cast("dict[str, object]", result))
+    mask_artifact = artifacts["mask"]
+    assert mask_artifact["kind"] == "label_map"
+    assert mask_artifact["coordinate_space"] == "image_physical"
+    assert mask_artifact.get("grid_of") == "image_path"
+    assert mask_artifact.get("labels") == [
+        {"value": value, "name": f"object {value}"} for value in result["details"]["object_ids"]
+    ]
+    assert ("overlay" in artifacts) == ("overlay" in outputs)
     source = nib.load(volume)
     labels = nib.load(outputs["mask"])
     assert labels.shape == source.shape
@@ -95,7 +110,9 @@ def _check_outputs(
     # The upstream label volume is in SimpleITK (z, y, x) order.
     assert np.array_equal(data.T.reshape(expected["masks"].shape), expected["masks"])
     # The CT example's mask overlay; point prompts also draw markers, so skip those.
-    if "overlay" in outputs and not any(p["points_xy"] for p in result["details"]["prompts"]):
+    if "overlay" in outputs and not any(
+        p["points_xy_pixels"] for p in result["details"]["prompts"]
+    ):
         _, stack = medmlx.load_image_stack(volume)
         base = np.repeat(stack[0, :, :, None], 3, axis=2).astype(np.float32)
         selected = cast(NumericArray, expected["masks"])[0] > 0
@@ -226,6 +243,19 @@ def test_multiframe_run_removes_prior_overlay(
     assert set(result["outputs"]) == {"mask"}
     assert not overlay.exists()
 
+    # An NPZ stack has no affine of its own, so its mask is in pixel space with no source grid.
+    stack = tmp_path / "stack.npz"
+    np.savez(stack, imgs=np.full((24, 24), 100, np.uint8))
+    npz_result = medmlx.run(
+        image_path=stack, box_xyxy_pixels=[2, 3, 20, 15],
+        weights_path=seeded_weights, output_dir=tmp_path / "npz-out",
+    )
+    _, artifacts = validate_outputs(cast("dict[str, object]", npz_result))
+    assert artifacts["mask"]["coordinate_space"] == "pixel"
+    assert artifacts["mask"].get("grid_of") is None
+    assert artifacts["mask"].get("labels") == [{"value": 1, "name": "object 1"}]
+    assert artifacts["overlay"]["kind"] == "preview"
+
 
 @pytest.mark.parametrize(
     "weights",
@@ -249,7 +279,7 @@ def test_mismatched_weights_raise_asset_not_ready(tmp_path: Path, weights: str) 
             image_path=write_volume(tmp_path, "slice2d"),
             weights_path=tmp_path / weights,
             output_dir=tmp_path / "out",
-            box_xyxy=[2, 3, 20, 15],
+            box_xyxy_pixels=[2, 3, 20, 15],
         )
 
 
@@ -264,6 +294,7 @@ def test_mismatched_weights_raise_asset_not_ready(tmp_path: Path, weights: str) 
         "dangling-output",
         "object-id-overflow",
         "prompt-object-id-overflow",
+        "prompt-unknown-key",
     ],
 )
 def test_invalid_arguments_are_rejected_before_downloading_weights(
@@ -280,13 +311,13 @@ def test_invalid_arguments_are_rejected_before_downloading_weights(
     arguments: dict[str, object] = {
         "image_path": write_volume(tmp_path, "slice2d"),
         "output_dir": output,
-        "box_xyxy": [2, 3, 20, 15],
+        "box_xyxy_pixels": [2, 3, 20, 15],
     }
     if problem == "bad-suffix":
         arguments["image_path"] = tmp_path / "slice.png"
         (tmp_path / "slice.png").write_text("not an image", encoding="utf-8")
     elif problem == "out-of-range":
-        arguments["frame_idx"] = 1
+        arguments["frame_index"] = 1
     elif problem == "non-bool":
         arguments["overwrite"] = "yes"
     elif problem == "zero-stop":
@@ -294,8 +325,12 @@ def test_invalid_arguments_are_rejected_before_downloading_weights(
     elif problem == "object-id-overflow":
         arguments["obj_id"] = 65536
     elif problem == "prompt-object-id-overflow":
-        arguments.pop("box_xyxy")
-        arguments["prompts"] = [{"obj_id": 65536, "box_xyxy": [2, 3, 20, 15]}]
+        arguments.pop("box_xyxy_pixels")
+        arguments["prompts"] = [{"obj_id": 65536, "box_xyxy_pixels": [2, 3, 20, 15]}]
+    elif problem == "prompt-unknown-key":
+        # The pre-rename key; frame 0 is valid, so only the unknown-key check can reject it.
+        arguments.pop("box_xyxy_pixels")
+        arguments["prompts"] = [{"obj_id": 1, "frame_idx": 0, "box_xyxy_pixels": [2, 3, 20, 15]}]
     else:
         output.mkdir()
         mask_path = output / medmlx.MASK_NAME

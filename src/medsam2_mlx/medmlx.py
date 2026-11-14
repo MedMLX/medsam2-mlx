@@ -25,6 +25,7 @@ from medmlx_core.errors import (
     MissingDependencyError,
     ModelExecutionError,
 )
+from medmlx_core.outputs import Artifact, artifact
 from medmlx_core.prompts import medsam2_prompt_payload
 from medmlx_core.weights import weights_dir, weights_revision
 
@@ -854,7 +855,7 @@ def _points(value: object) -> tuple[tuple[float, float], ...]:
     """Parse ``[x, y]`` click positions (column, row) as finite floats."""
 
     if isinstance(value, str | bytes) or not isinstance(value, Sequence):
-        raise InvalidInputError("MedSAM2 points_xy must be a sequence of [x, y] pairs")
+        raise InvalidInputError("MedSAM2 points_xy_pixels must be a sequence of [x, y] pairs")
     points: list[tuple[float, float]] = []
     for item in cast(Sequence[object], value):
         if (
@@ -862,7 +863,7 @@ def _points(value: object) -> tuple[tuple[float, float], ...]:
             or not isinstance(item, Sequence)
             or len(cast(Sequence[object], item)) != 2
         ):
-            raise InvalidInputError("MedSAM2 each point in points_xy must have 2 values")
+            raise InvalidInputError("MedSAM2 each point in points_xy_pixels must have 2 values")
         pair = cast(Sequence[object], item)
         if any(isinstance(value, bool) or not isinstance(value, int | float) for value in pair):
             raise InvalidInputError("MedSAM2 point coordinates must be numbers")
@@ -916,19 +917,34 @@ def _require_prompts_sequence(value: object) -> Sequence[Mapping[str, object]]:
     return parsed
 
 
-def _parse_prompt_entry(entry: Mapping[str, object], *, default_frame_idx: int) -> _PromptRequest:
-    """Validate one ``prompts`` mapping; ``obj_id`` is required and ``frame_idx`` defaults.
+_PROMPT_ENTRY_KEYS = frozenset({
+    "obj_id", "frame_index", "box_xyxy_pixels", "points_xy_pixels", "point_labels",
+    "mask_path", "clear_old_points", "normalize_coords",
+})
 
-    ``mask_path`` is resolved to an absolute path and excludes ``box_xyxy``/``points_xy``.
+
+def _parse_prompt_entry(entry: Mapping[str, object], *, default_frame_idx: int) -> _PromptRequest:
+    """Validate one ``prompts`` mapping; ``obj_id`` is required and ``frame_index`` defaults.
+
+    ``mask_path`` is resolved to an absolute path and excludes
+    ``box_xyxy_pixels``/``points_xy_pixels``.
     """
 
-    frame_idx = _require_int("frame_idx", entry.get("frame_idx", default_frame_idx))
+    # Reject unknown keys so a misspelled or renamed key (such as ``frame_idx``) cannot
+    # silently fall back to its default.
+    unknown = sorted(set(entry) - _PROMPT_ENTRY_KEYS)
+    if unknown:
+        raise InvalidInputError(
+            f"MedSAM2 prompts entry has unknown keys {unknown}; "
+            f"allowed keys are {sorted(_PROMPT_ENTRY_KEYS)}"
+        )
+    frame_idx = _require_int("frame_index", entry.get("frame_index", default_frame_idx))
     if "obj_id" not in entry:
         raise InvalidInputError("MedSAM2 each prompts entry requires obj_id")
     obj_id = _require_int("obj_id", entry["obj_id"])
-    raw_box = entry.get("box_xyxy")
+    raw_box = entry.get("box_xyxy_pixels")
     box = None if raw_box is None else _box(raw_box)
-    raw_points = entry.get("points_xy")
+    raw_points = entry.get("points_xy_pixels")
     points_xy = () if raw_points is None else _points(raw_points)
     raw_labels = entry.get("point_labels")
     point_labels = () if raw_labels is None else _point_labels(raw_labels)
@@ -938,7 +954,7 @@ def _parse_prompt_entry(entry: Mapping[str, object], *, default_frame_idx: int) 
     mask_path = None if raw_mask_path is None else Path(raw_mask_path).expanduser().resolve()
     if mask_path is not None and (box is not None or points_xy):
         raise InvalidInputError(
-            "MedSAM2 prompts entry mask_path cannot combine with box_xyxy/points_xy"
+            "MedSAM2 prompts entry mask_path cannot combine with box_xyxy_pixels/points_xy_pixels"
         )
     clear_old_points = _require_bool("clear_old_points", entry.get("clear_old_points", True))
     normalize_coords = _require_bool("normalize_coords", entry.get("normalize_coords", True))
@@ -996,11 +1012,11 @@ def run(
     image_path: str | Path,
     weights_path: str | Path | None = None,
     output_dir: str | Path,
-    box_xyxy: Sequence[float] | None = None,
-    points_xy: Sequence[Sequence[float]] | None = None,
+    box_xyxy_pixels: Sequence[float] | None = None,
+    points_xy_pixels: Sequence[Sequence[float]] | None = None,
     point_labels: Sequence[int] | None = None,
     mask_path: str | Path | None = None,
-    frame_idx: int = 0,
+    frame_index: int = 0,
     obj_id: int = 1,
     prompts: Sequence[Mapping[str, object]] | None = None,
     hu_window: Sequence[float] | None = None,
@@ -1020,11 +1036,11 @@ def run(
     gets an identity affine (or one built from the NPZ's own ``spacing``, if given).
 
     There are two mutually exclusive ways to prompt. For one object, give
-    ``box_xyxy`` and/or ``points_xy``/``point_labels`` (combinable, as upstream's
-    interactive predictor allows), or ``mask_path`` alone, with ``frame_idx`` and
+    ``box_xyxy_pixels`` and/or ``points_xy_pixels``/``point_labels`` (combinable, as upstream's
+    interactive predictor allows), or ``mask_path`` alone, with ``frame_index`` and
     ``obj_id`` naming its slice and label. For multiple objects, give ``prompts``
     instead: a sequence of mappings, each with a required ``obj_id`` and any of
-    ``frame_idx`` (default 0), ``box_xyxy``, ``points_xy``, ``point_labels``,
+    ``frame_index`` (default 0), ``box_xyxy_pixels``, ``points_xy_pixels``, ``point_labels``,
     ``mask_path``, ``clear_old_points`` (default ``True``) and ``normalize_coords``
     (default ``True``), mirroring the upstream predictor's ``add_new_mask``/
     ``add_new_points_or_box`` calls for each tracked object. Every object is
@@ -1052,23 +1068,23 @@ def run(
             ``sam2.1_hiera_t512`` graph. Other published checkpoints are at
             https://huggingface.co/MedMLX/medsam2-mlx.
         output_dir: Directory for the outputs; created if missing.
-        box_xyxy: Box prompt ``[x_min, y_min, x_max, y_max]`` in pixels of slice
-            ``frame_idx`` as stored (before the 512 x 512 resize). May combine with
-            ``points_xy``; not with ``mask_path``.
-        points_xy: Point prompts, each an ``[x, y]`` pixel pair on slice
-            ``frame_idx`` in the same coordinates, paired with ``point_labels``. May
-            combine with ``box_xyxy``; not with ``mask_path``.
-        point_labels: One upstream SAM label per entry of ``points_xy``: ``1``
+        box_xyxy_pixels: Box prompt ``[x_min, y_min, x_max, y_max]`` in pixels of slice
+            ``frame_index`` as stored (before the 512 x 512 resize). May combine with
+            ``points_xy_pixels``; not with ``mask_path``.
+        points_xy_pixels: Point prompts, each an ``[x, y]`` pixel pair on slice
+            ``frame_index`` in the same coordinates, paired with ``point_labels``. May
+            combine with ``box_xyxy_pixels``; not with ``mask_path``.
+        point_labels: One upstream SAM label per entry of ``points_xy_pixels``: ``1``
             for foreground, ``0`` for background.
         mask_path: Binary NIfTI mask on the input's grid (same shape and exactly equal affine)
-            whose nonzero voxels all lie on slice ``frame_idx``. Exclusive with
-            ``box_xyxy``/``points_xy``.
-        frame_idx: Zero-based slice index of the single-object prompt.
+            whose nonzero voxels all lie on slice ``frame_index``. Exclusive with
+            ``box_xyxy_pixels``/``points_xy_pixels``.
+        frame_index: Zero-based slice index of the single-object prompt.
         obj_id: Positive label written for the single-object prompt. Output labels are
             uint16, so IDs must fit in 1..65535.
         prompts: Multiple objects' prompts; see above. Exclusive with
-            ``box_xyxy``, ``points_xy``, ``point_labels``, ``mask_path``, and
-            with passing a non-default ``frame_idx``/``obj_id``.
+            ``box_xyxy_pixels``, ``points_xy_pixels``, ``point_labels``, ``mask_path``, and
+            with passing a non-default ``frame_index``/``obj_id``.
         hu_window: Optional ``(lower, upper)`` intensity clip, in the volume's own units
             (Hounsfield units for CT), applied before the volume is min-max scaled to
             uint8. It mirrors the pinned CT example's per-lesion DICOM window
@@ -1094,7 +1110,13 @@ def run(
     Returns:
         ``outputs`` maps ``mask`` to ``medsam2_mask.nii.gz`` (uint16 labels 0 and
         each ``obj_id``) and, for single-slice inputs, ``overlay`` to
-        ``medsam2_overlay.png``. ``details`` holds the frame count and size,
+        ``medsam2_overlay.png``. ``artifacts`` describes them: ``mask`` is a
+        ``label_map`` with one label per prompted ``obj_id`` (named
+        ``"object <obj_id>"``). For NIfTI input it is in ``image_physical`` space
+        on the grid of ``image_path``. For ``.npz`` and frame-folder input its
+        affine is synthetic (identity, or the NPZ ``spacing``), so it is in
+        ``pixel`` space with no ``grid_of``. ``overlay`` is a ``preview`` in
+        ``pixel`` space. ``details`` holds the frame count and size,
         labeled voxel count, slices with labels, object ids, and every prompt.
 
     Raises:
@@ -1177,34 +1199,37 @@ def run(
 
     if prompts is not None:
         if (
-            box_xyxy is not None
-            or points_xy is not None
+            box_xyxy_pixels is not None
+            or points_xy_pixels is not None
             or point_labels is not None
             or mask_path is not None
-            or frame_idx != 0
+            or frame_index != 0
             or obj_id != 1
         ):
             raise InvalidInputError(
-                "MedSAM2 prompts replaces box_xyxy/points_xy/point_labels/mask_path/"
-                "frame_idx/obj_id; use only one prompt style"
+                "MedSAM2 prompts replaces box_xyxy_pixels/points_xy_pixels/point_labels/mask_path/"
+                "frame_index/obj_id; use only one prompt style"
             )
         requests = [
             _parse_prompt_entry(entry, default_frame_idx=0)
             for entry in _require_prompts_sequence(prompts)
         ]
     else:
-        if mask_path is not None and (box_xyxy is not None or points_xy is not None):
-            raise InvalidInputError("MedSAM2 mask_path cannot combine with box_xyxy/points_xy")
-        if mask_path is None and box_xyxy is None and points_xy is None:
+        if mask_path is not None and (box_xyxy_pixels is not None or points_xy_pixels is not None):
             raise InvalidInputError(
-                "MedSAM2 requires one of box_xyxy, points_xy and point_labels, or mask_path"
+                "MedSAM2 mask_path cannot combine with box_xyxy_pixels/points_xy_pixels"
+            )
+        if mask_path is None and box_xyxy_pixels is None and points_xy_pixels is None:
+            raise InvalidInputError(
+                "MedSAM2 requires one of box_xyxy_pixels, points_xy_pixels and point_labels, "
+                "or mask_path"
             )
         requests = [
             _PromptRequest(
-                frame_idx=_require_int("frame_idx", frame_idx),
+                frame_idx=_require_int("frame_index", frame_index),
                 obj_id=_require_int("obj_id", obj_id),
-                box=None if box_xyxy is None else _box(box_xyxy),
-                points_xy=() if points_xy is None else _points(points_xy),
+                box=None if box_xyxy_pixels is None else _box(box_xyxy_pixels),
+                points_xy=() if points_xy_pixels is None else _points(points_xy_pixels),
                 point_labels=() if point_labels is None else _point_labels(point_labels),
                 mask_path=None if mask_path is None else Path(mask_path).expanduser().resolve(),
                 clear_old_points=True,
@@ -1223,7 +1248,7 @@ def run(
         raise InvalidInputError("MedSAM2 prompts obj_id values must be unique")
     if propagation != "none" and len({request.frame_idx for request in requests}) > 1:
         raise InvalidInputError(
-            "MedSAM2 propagation requires every prompt to share the same frame_idx"
+            "MedSAM2 propagation requires every prompt to share the same frame_index"
         )
 
     prompt_list: list[MedSAM2Prompt] = []
@@ -1303,8 +1328,20 @@ def run(
     if overlay_output in staged:
         outputs["overlay"] = overlay_output.as_posix()
     labelled = np.flatnonzero(mask_volume.reshape(mask_volume.shape[0], -1).any(axis=1))
+    from_nifti = not source_path.is_dir() and source_path.suffix.lower() != ".npz"
+    artifacts: dict[str, Artifact] = {
+        "mask": artifact(
+            kind="label_map",
+            coordinate_space="image_physical" if from_nifti else "pixel",
+            grid_of="image_path" if from_nifti else None,
+            labels=[{"value": value, "name": f"object {value}"} for value in sorted(object_ids)],
+        )
+    }
+    if overlay_output in staged:
+        artifacts["overlay"] = artifact(kind="preview", coordinate_space="pixel")
     return {
         "outputs": outputs,
+        "artifacts": artifacts,
         "details": {
             "weights_revision": weights_revision(weights.parent),
             "num_frames": session.num_frames,

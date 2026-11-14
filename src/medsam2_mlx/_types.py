@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, BinaryIO, Literal, NotRequired, Protocol, Type
 
 import numpy as np
 import numpy.typing as npt
+from medmlx_core.outputs import Artifact
 from medmlx_core.typing import MetalKernel
 
 if TYPE_CHECKING:
@@ -691,11 +692,11 @@ class RunnerArguments(TypedDict, total=False):
     image_path: str | Path
     weights_path: str | Path
     output_dir: str | Path
-    box_xyxy: Sequence[float] | None
-    points_xy: Sequence[Sequence[float]] | None
+    box_xyxy_pixels: Sequence[float] | None
+    points_xy_pixels: Sequence[Sequence[float]] | None
     point_labels: Sequence[int] | None
     mask_path: str | Path | None
-    frame_idx: int
+    frame_index: int
     obj_id: int
     prompts: Sequence[Mapping[str, object]] | None
     hu_window: Sequence[float] | None
@@ -739,6 +740,7 @@ class RunnerDetails(TypedDict):
 
 class RunnerResult(TypedDict):
     outputs: dict[str, str]
+    artifacts: dict[str, Artifact]
     details: RunnerDetails
 
 
@@ -757,10 +759,10 @@ class HeadArguments(TypedDict, total=False):
 class PromptedRunArguments(TypedDict):
     image_path: str | Path
     propagation: Propagation
-    frame_idx: NotRequired[int]
+    frame_index: NotRequired[int]
     obj_id: NotRequired[int]
-    box_xyxy: NotRequired[Sequence[float] | None]
-    points_xy: NotRequired[Sequence[Sequence[float]] | None]
+    box_xyxy_pixels: NotRequired[Sequence[float] | None]
+    points_xy_pixels: NotRequired[Sequence[Sequence[float]] | None]
     point_labels: NotRequired[Sequence[int] | None]
     mask_path: NotRequired[str | Path | None]
     prompts: NotRequired[Sequence[Mapping[str, object]] | None]
