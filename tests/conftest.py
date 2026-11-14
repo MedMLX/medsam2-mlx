@@ -95,10 +95,10 @@ def load_small_model(
     state_dict: dict[str, HostArray], *, apply_postprocessing: bool
 ) -> MedSAM2Model:
     """Build and load the reduced model from a named tensor mapping."""
-    from medsam2_mlx.mlx_weights import load_model
+    from medsam2_mlx.mlx_weights import load_network
 
     config = small_config()
-    return load_model(state_dict, apply_postprocessing=apply_postprocessing, config=config)
+    return load_network(state_dict, apply_postprocessing=apply_postprocessing, config=config)
 
 
 def relative_error(actual: ArrayInput, expected: HostArray) -> float:

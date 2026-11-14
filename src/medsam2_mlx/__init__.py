@@ -5,6 +5,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import TYPE_CHECKING
 
+from medsam2_mlx.medmlx import segment
 from medsam2_mlx.request import (
     MedSAM2Prompt,
     MedSAM2RuntimeConfig,
@@ -13,7 +14,7 @@ from medsam2_mlx.request import (
 if TYPE_CHECKING:
     from medsam2_mlx.mlx_model import create_model
     from medsam2_mlx.mlx_predictor import PreparedVideoFrames, build_predictor
-    from medsam2_mlx.mlx_weights import load_model
+    from medsam2_mlx.mlx_weights import load_network
 
 __version__ = "0.3.0"
 
@@ -23,7 +24,8 @@ __all__ = [
     "PreparedVideoFrames",
     "build_predictor",
     "create_model",
-    "load_model",
+    "load_network",
+    "segment",
 ]
 
 # MLX loads with the model modules, so importing the medmlx declaration stays light.
@@ -31,7 +33,7 @@ _LAZY = {
     "PreparedVideoFrames": "medsam2_mlx.mlx_predictor",
     "build_predictor": "medsam2_mlx.mlx_predictor",
     "create_model": "medsam2_mlx.mlx_model",
-    "load_model": "medsam2_mlx.mlx_weights",
+    "load_network": "medsam2_mlx.mlx_weights",
 }
 
 

@@ -8,13 +8,10 @@ NPZ and frame-folder inputs use a synthetic grid.
 
 from __future__ import annotations
 
-import os
-import shutil
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from tempfile import TemporaryDirectory, mkdtemp
 from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
@@ -25,9 +22,10 @@ from medmlx_core.errors import (
     MissingDependencyError,
     ModelExecutionError,
 )
+from medmlx_core.files import PathLike, output_targets, publish
 from medmlx_core.outputs import Artifact, artifact
 from medmlx_core.prompts import medsam2_prompt_payload
-from medmlx_core.weights import weights_dir, weights_revision
+from medmlx_core.weights import model_folder, weights_revision
 
 from medsam2_mlx._types import (
     BoolArray,
@@ -49,7 +47,7 @@ MODEL = {
     "id": "medsam2",
     "label": "MedSAM2",
     "task": "segmentation",
-    "run": "medsam2_mlx.medmlx:run",
+    "run": "medsam2_mlx.medmlx:segment",
     # Measured MLX peak for one box tracked through 21 slices of a 512x512x147 CT;
     # larger inputs need more.
     "peak_memory_gb": 1.3,
@@ -60,12 +58,13 @@ MODEL = {
     ),
 }
 
-MASK_NAME = "medsam2_mask.nii.gz"
-OVERLAY_NAME = "medsam2_overlay.png"
+MASK_NAME = "mask.nii.gz"
+PREVIEW_NAME = "preview.png"
+CHECKPOINT_NAME = "MedSAM2_CTLesion.safetensors"
 PROPAGATION_MODES = ("none", "forward", "reverse", "both")
 _WEIGHTS_HINT = (
-    "Omit weights_path to download MedMLX/medsam2-ct-lesion-mlx, or pass a MedSAM2 "
-    "safetensors checkpoint from https://huggingface.co/MedMLX/medsam2-mlx."
+    "Omit weights_path to download MedMLX/medsam2-ct-lesion-mlx, or pass a folder with a "
+    "MedSAM2 safetensors checkpoint from https://huggingface.co/MedMLX/medsam2-mlx."
 )
 
 
@@ -970,48 +969,12 @@ def _parse_prompt_entry(entry: Mapping[str, object], *, default_frame_idx: int) 
     )
 
 
-def _publish(staged: dict[Path, Path], *, remove: tuple[Path, ...] = ()) -> None:
-    """Restore the prior artifact set if replacement or stale-output removal fails."""
-    recovery = Path(mkdtemp(prefix=".medsam2-backup-", dir=next(iter(staged)).parent))
-    cleanup = True
-    try:
-        backups: dict[Path, Path] = {}
-        for index, path in enumerate((*staged, *remove)):
-            if path.exists() or path.is_symlink():
-                backup = recovery / str(index)
-                os.link(path, backup, follow_symlinks=False)
-                backups[path] = backup
-        changed: list[Path] = []
-        try:
-            for path, temporary in staged.items():
-                os.replace(temporary, path)
-                changed.append(path)
-            for path in remove:
-                if path.exists() or path.is_symlink():
-                    path.unlink()
-                    changed.append(path)
-        except BaseException:
-            try:
-                for path in reversed(changed):
-                    backup = backups.get(path)
-                    if backup is None:
-                        path.unlink(missing_ok=True)
-                    else:
-                        os.replace(backup, path)
-            except OSError as error:
-                cleanup = False
-                raise OSError(f"Cannot restore outputs; backups retained at {recovery}") from error
-            raise
-    finally:
-        if cleanup:
-            shutil.rmtree(recovery)
-
-
-def run(
+def segment(
     *,
-    image_path: str | Path,
-    weights_path: str | Path | None = None,
-    output_dir: str | Path,
+    image_path: PathLike,
+    weights_path: PathLike | None = None,
+    checkpoint: str = CHECKPOINT_NAME,
+    output_dir: PathLike,
     box_xyxy_pixels: Sequence[float] | None = None,
     points_xy_pixels: Sequence[Sequence[float]] | None = None,
     point_labels: Sequence[int] | None = None,
@@ -1062,11 +1025,11 @@ def run(
             dependency and documents this same frame-folder path as its fallback.
             ``hu_window`` and NIfTI ``mask_path`` prompts apply only to a NIfTI
             input.
-        weights_path: Optional model folder; omitted downloads ``MedMLX/medsam2-ct-lesion-mlx``.
-            The folder contains ``MedSAM2_CTLesion.safetensors``. Explicit native
-            checkpoint-file paths are also accepted for the pinned
-            ``sam2.1_hiera_t512`` graph. Other published checkpoints are at
-            https://huggingface.co/MedMLX/medsam2-mlx.
+        weights_path: Optional model folder; omitted downloads ``MedMLX/medsam2-ct-lesion-mlx``,
+            which holds ``MedSAM2_CTLesion.safetensors``.
+        checkpoint: File name of the native ``sam2.1_hiera_t512`` checkpoint inside the
+            model folder. Other published checkpoints, such as ``MedSAM2_latest.safetensors``
+            from https://huggingface.co/MedMLX/medsam2-mlx, need ``weights_path``.
         output_dir: Directory for the outputs; created if missing.
         box_xyxy_pixels: Box prompt ``[x_min, y_min, x_max, y_max]`` in pixels of slice
             ``frame_index`` as stored (before the 512 x 512 resize). May combine with
@@ -1108,9 +1071,9 @@ def run(
             keeps them. Input images, masks and weights are protected.
 
     Returns:
-        ``outputs`` maps ``mask`` to ``medsam2_mask.nii.gz`` (uint16 labels 0 and
-        each ``obj_id``) and, for single-slice inputs, ``overlay`` to
-        ``medsam2_overlay.png``. ``artifacts`` describes them: ``mask`` is a
+        ``outputs`` maps ``mask`` to ``mask.nii.gz`` (uint16 labels 0 and
+        each ``obj_id``) and, for single-slice inputs, ``preview`` to
+        ``preview.png``. ``artifacts`` describes them: ``mask`` is a
         ``label_map`` with one label per prompted ``obj_id`` (named
         ``"object <obj_id>"``). For NIfTI input it is in ``image_physical`` space
         on the grid of ``image_path``. For ``.npz`` and frame-folder input its
@@ -1134,7 +1097,10 @@ def run(
     """
 
     apply_postprocessing = _require_bool("apply_postprocessing", apply_postprocessing)
-    overwrite = _require_bool("overwrite", overwrite)
+    if not isinstance(cast(object, checkpoint), str) or Path(checkpoint).name != checkpoint:
+        raise InvalidInputError("MedSAM2 checkpoint must be a file name inside the model folder")
+    if weights_path is None and checkpoint != CHECKPOINT_NAME:
+        raise InvalidInputError(f"MedSAM2 checkpoint {checkpoint} needs weights_path")
     if propagation not in PROPAGATION_MODES:
         raise InvalidInputError(
             f"MedSAM2 propagation must be one of {', '.join(PROPAGATION_MODES)}, "
@@ -1149,23 +1115,14 @@ def run(
 
     source_path = Path(image_path).expanduser().resolve()
     if not source_path.exists():
-        raise InvalidInputError(f"Missing MedSAM2 input: {source_path}")
-    output = Path(output_dir).expanduser().resolve()
-    if output.exists() and not output.is_dir():
-        raise InvalidInputError(f"MedSAM2 output_dir is not a directory: {output}")
-    mask_output = output / MASK_NAME
-    overlay_output = output / OVERLAY_NAME
-    _require_distinct_outputs((mask_output, overlay_output), (source_path,))
-    existing = [
-        path.as_posix()
-        for path in (mask_output, overlay_output)
-        if path.exists() or path.is_symlink()
-    ]
-    if existing and not overwrite:
-        raise InvalidInputError(
-            f"MedSAM2 outputs already exist: {', '.join(existing)}; "
-            "pass overwrite=True to replace them"
-        )
+        raise InvalidInputError(f"image_path not found: {source_path}")
+    # The preview exists only for single-slice input, but both names are reserved so a
+    # rerun on a volume removes an earlier preview.
+    targets = output_targets(
+        output_dir, {"mask": MASK_NAME, "preview": PREVIEW_NAME},
+        overwrite=overwrite, inputs=[source_path],
+    )
+    mask_output, preview_output = targets["mask"], targets["preview"]
 
     if source_path.is_dir():
         if window is not None:
@@ -1173,7 +1130,7 @@ def run(
                 "MedSAM2 hu_window applies only to NIfTI input, not a frame folder"
             )
         _require_distinct_outputs(
-            (mask_output, overlay_output),
+            (mask_output, preview_output),
             tuple(
                 entry
                 for entry in source_path.iterdir()
@@ -1238,7 +1195,7 @@ def run(
         ]
 
     _require_distinct_outputs(
-        (mask_output, overlay_output),
+        (mask_output, preview_output),
         tuple(request.mask_path for request in requests if request.mask_path is not None),
     )
     object_ids = [request.obj_id for request in requests]
@@ -1283,11 +1240,8 @@ def run(
     # Every argument is checked; only now may the weights download.
     # Keep the .safetensors name of Hub-cache symlinks for admission and loading;
     # their content-addressed targets have no extension. Alias checks still resolve paths.
-    bundle_dir = weights_dir("medsam2") if weights_path is None else Path(weights_path).expanduser()
-    # Preserve explicit checkpoint-file callers and named cache symlinks.
-    checkpoint = bundle_dir / "MedSAM2_CTLesion.safetensors" if bundle_dir.is_dir() else bundle_dir
-    weights = _admit_weights(checkpoint.absolute())
-    _require_distinct_outputs((mask_output, overlay_output), (weights,))
+    weights = _admit_weights((model_folder("medsam2", weights_path) / checkpoint).absolute())
+    _require_distinct_outputs((mask_output, preview_output), (weights,))
     runtime = MedSAM2RuntimeConfig(checkpoint=weights, apply_postprocessing=apply_postprocessing)
     predictor = _build_predictor(runtime, weights)
     try:
@@ -1308,25 +1262,18 @@ def run(
         raise ModelExecutionError(f"medsam2 failed during execution: {error}") from error
 
     nib = _nibabel()
-    output.mkdir(parents=True, exist_ok=True)
     labels = mask_volume.reshape(source.shape[::-1]).T
     image = cast(NiftiConstructor, source.__class__)(labels, None, header=source.header)
     image.set_data_dtype(np.uint16)
-    # Keep staged outputs private because the image writers follow links when opening
-    # paths. Their filenames retain the suffixes required by the writers.
-    with TemporaryDirectory(prefix=".medsam2-", dir=output) as staging_dir:
-        staged = {mask_output: Path(staging_dir) / MASK_NAME}
-        if session.num_frames == 1:
-            staged[overlay_output] = Path(staging_dir) / OVERLAY_NAME
-        nib.save(image, staged[mask_output])
-        if overlay_output in staged:
-            save_overlay(
-                _pil_from_uint8(stack[0]), mask_volume[0] > 0, prompt_tuple, staged[overlay_output]
-            )
-        _publish(staged, remove=() if overlay_output in staged else (overlay_output,))
+    writes: dict[Path, Callable[[Path], object]] = {mask_output: lambda path: nib.save(image, path)}
+    if session.num_frames == 1:
+        writes[preview_output] = lambda path: save_overlay(
+            _pil_from_uint8(stack[0]), mask_volume[0] > 0, prompt_tuple, path
+        )
+    publish(writes, remove=() if preview_output in writes else (preview_output,))
     outputs = {"mask": mask_output.as_posix()}
-    if overlay_output in staged:
-        outputs["overlay"] = overlay_output.as_posix()
+    if preview_output in writes:
+        outputs["preview"] = preview_output.as_posix()
     labelled = np.flatnonzero(mask_volume.reshape(mask_volume.shape[0], -1).any(axis=1))
     from_nifti = not source_path.is_dir() and source_path.suffix.lower() != ".npz"
     artifacts: dict[str, Artifact] = {
@@ -1337,8 +1284,8 @@ def run(
             labels=[{"value": value, "name": f"object {value}"} for value in sorted(object_ids)],
         )
     }
-    if overlay_output in staged:
-        artifacts["overlay"] = artifact(kind="preview", coordinate_space="pixel")
+    if preview_output in writes:
+        artifacts["preview"] = artifact(kind="preview", coordinate_space="pixel")
     return {
         "outputs": outputs,
         "artifacts": artifacts,

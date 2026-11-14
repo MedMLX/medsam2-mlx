@@ -6,11 +6,11 @@ is not part of this repository.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import cast
 
+import medmlx_core.weights as core_weights
 import nibabel as _nib
 import numpy as np
 import pytest
@@ -88,7 +88,7 @@ def _check_outputs(
 ) -> None:
     """Compare the written label volume and overlay with the recorded upstream case."""
     outputs = result["outputs"]
-    assert set(outputs) == ({"mask", "overlay"} if expected["masks"].shape[0] == 1 else {"mask"})
+    assert set(outputs) == ({"mask", "preview"} if expected["masks"].shape[0] == 1 else {"mask"})
     for path in outputs.values():
         assert Path(path).parent == output_dir.resolve()
     _, artifacts = validate_outputs(cast("dict[str, object]", result))
@@ -99,7 +99,7 @@ def _check_outputs(
     assert mask_artifact.get("labels") == [
         {"value": value, "name": f"object {value}"} for value in result["details"]["object_ids"]
     ]
-    assert ("overlay" in artifacts) == ("overlay" in outputs)
+    assert ("preview" in artifacts) == ("preview" in outputs)
     source = nib.load(volume)
     labels = nib.load(outputs["mask"])
     assert labels.shape == source.shape
@@ -110,14 +110,14 @@ def _check_outputs(
     # The upstream label volume is in SimpleITK (z, y, x) order.
     assert np.array_equal(data.T.reshape(expected["masks"].shape), expected["masks"])
     # The CT example's mask overlay; point prompts also draw markers, so skip those.
-    if "overlay" in outputs and not any(
+    if "preview" in outputs and not any(
         p["points_xy_pixels"] for p in result["details"]["prompts"]
     ):
         _, stack = medmlx.load_image_stack(volume)
         base = np.repeat(stack[0, :, :, None], 3, axis=2).astype(np.float32)
         selected = cast(NumericArray, expected["masks"])[0] > 0
         base[selected] = 0.5 * base[selected] + 0.5 * np.array([251, 252, 30])
-        with Image.open(outputs["overlay"]) as overlay:
+        with Image.open(outputs["preview"]) as overlay:
             assert np.array_equal(np.asarray(overlay), np.clip(base, 0, 255).astype(np.uint8))
 
 
@@ -142,7 +142,9 @@ def test_preprocessing_matches_upstream_ct(reference: dict[str, HostArray]) -> N
 @pytest.fixture(scope="module")
 def seeded_weights(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Write seeded small-network weights for runner comparisons."""
-    return write_seeded_weights(tmp_path_factory.mktemp("weights") / "medsam2.safetensors")
+    folder = tmp_path_factory.mktemp("weights")
+    write_seeded_weights(folder / medmlx.CHECKPOINT_NAME)
+    return folder
 
 
 @pytest.mark.parametrize("name", list(FAKE_RUNS) + list(NETWORK_RUNS))
@@ -177,7 +179,7 @@ def test_run_with_seeded_network_matches_upstream(
         return original(index, ids, logits)
 
     monkeypatch.setattr(medmlx, "mask_result", capture)
-    result = medmlx.run(
+    result = medmlx.segment(
         **_arguments(run, volume, mask),
         weights_path=seeded_weights,
         output_dir=output_dir,
@@ -191,51 +193,17 @@ def test_run_with_seeded_network_matches_upstream(
         np.testing.assert_array_equal(masks[0], scores > 0)
 
 
-def test_publication_failure_restores_prior_mask_and_overlay(
-    tmp_path: Path, seeded_weights: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    run = FAKE_RUNS["slice2d"]
-    volume, mask = prepare_inputs(tmp_path / "inputs", run)
-    output = tmp_path / "out"
-    output.mkdir()
-    old = {
-        output / medmlx.MASK_NAME: b"old mask",
-        output / medmlx.OVERLAY_NAME: b"old overlay",
-    }
-    for path, contents in old.items():
-        path.write_bytes(contents)
-    replace = os.replace
-    failed = False
-
-    def fail_overlay(source: Path, destination: Path) -> None:
-        nonlocal failed
-        if destination == output / medmlx.OVERLAY_NAME and not failed:
-            failed = True
-            raise OSError("injected publication failure")
-        replace(source, destination)
-
-    monkeypatch.setattr(medmlx.os, "replace", fail_overlay)
-    with pytest.raises(OSError, match="injected publication failure"):
-        medmlx.run(
-            **_arguments(run, volume, mask),
-            weights_path=seeded_weights, output_dir=output, overwrite=True,
-        )
-    for path, contents in old.items():
-        assert path.read_bytes() == contents
-    assert not list(output.glob(".medsam2-*"))
-
-
-def test_multiframe_run_removes_prior_overlay(
+def test_multiframe_run_removes_prior_preview(
     tmp_path: Path, seeded_weights: Path
 ) -> None:
     run = FAKE_RUNS["both"]
     volume, mask = prepare_inputs(tmp_path / "inputs", run)
     output = tmp_path / "out"
     output.mkdir()
-    overlay = output / medmlx.OVERLAY_NAME
+    overlay = output / medmlx.PREVIEW_NAME
     overlay.write_bytes(b"overlay from a prior single-frame run")
 
-    result = medmlx.run(
+    result = medmlx.segment(
         **_arguments(run, volume, mask),
         weights_path=seeded_weights, output_dir=output, overwrite=True,
     )
@@ -246,7 +214,7 @@ def test_multiframe_run_removes_prior_overlay(
     # An NPZ stack has no affine of its own, so its mask is in pixel space with no source grid.
     stack = tmp_path / "stack.npz"
     np.savez(stack, imgs=np.full((24, 24), 100, np.uint8))
-    npz_result = medmlx.run(
+    npz_result = medmlx.segment(
         image_path=stack, box_xyxy_pixels=[2, 3, 20, 15],
         weights_path=seeded_weights, output_dir=tmp_path / "npz-out",
     )
@@ -254,7 +222,7 @@ def test_multiframe_run_removes_prior_overlay(
     assert artifacts["mask"]["coordinate_space"] == "pixel"
     assert artifacts["mask"].get("grid_of") is None
     assert artifacts["mask"].get("labels") == [{"value": 1, "name": "object 1"}]
-    assert artifacts["overlay"]["kind"] == "preview"
+    assert artifacts["preview"]["kind"] == "preview"
 
 
 @pytest.mark.parametrize(
@@ -275,9 +243,10 @@ def test_mismatched_weights_raise_asset_not_ready(tmp_path: Path, weights: str) 
         mx.save_safetensors(str(tmp_path / weights), {"x": mx.zeros((2,))})
     (tmp_path / "corrupt.safetensors").write_bytes(b"\x00" * 16)
     with pytest.raises(AssetNotReadyError):
-        medmlx.run(
+        medmlx.segment(
             image_path=write_volume(tmp_path, "slice2d"),
-            weights_path=tmp_path / weights,
+            weights_path=tmp_path,
+            checkpoint=weights,
             output_dir=tmp_path / "out",
             box_xyxy_pixels=[2, 3, 20, 15],
         )
@@ -306,7 +275,7 @@ def test_invalid_arguments_are_rejected_before_downloading_weights(
         """Fail if the runner asks for weights before checking its arguments."""
         pytest.fail("weights were requested before the arguments were checked")
 
-    monkeypatch.setattr(medmlx, "weights_dir", download)
+    monkeypatch.setattr(core_weights, "weights_dir", download)
     output = tmp_path / "out"
     arguments: dict[str, object] = {
         "image_path": write_volume(tmp_path, "slice2d"),
@@ -339,7 +308,7 @@ def test_invalid_arguments_are_rejected_before_downloading_weights(
         else:
             mask_path.write_bytes(b"previous")
     with pytest.raises(InvalidInputError):
-        medmlx.run(**cast(RunnerArguments, arguments))
+        medmlx.segment(**cast(RunnerArguments, arguments))
 
 
 class _ScriptedPredictor:

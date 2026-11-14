@@ -21,7 +21,7 @@ from medsam2_mlx.config import SAM2_1_HIERA_T512, Sam2Config
 from medsam2_mlx.mlx_model import create_model
 from medsam2_mlx.sam2_base import MedSAM2Model
 
-__all__ = ["load_model"]
+__all__ = ["load_network"]
 
 
 def _check_parameter_names_and_shapes(
@@ -46,7 +46,7 @@ def _check_parameter_names_and_shapes(
         raise InvalidInputError(f"MedSAM2 weights have wrong shapes: {details}")
 
 
-def load_model(
+def load_network(
     checkpoint: str | Path | Mapping[str, ArrayInput],
     *,
     apply_postprocessing: bool = True,

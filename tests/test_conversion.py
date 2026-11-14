@@ -7,7 +7,7 @@ import pytest
 from medmlx_core.errors import InvalidInputError
 
 from medsam2_mlx._types import HostArray
-from medsam2_mlx.mlx_weights import load_model
+from medsam2_mlx.mlx_weights import load_network
 from tests.conftest import small_config
 
 
@@ -28,4 +28,4 @@ def test_loading_rejects_mismatched_or_invalid_tensors(
     else:
         state["no_obj_ptr"] = np.full_like(state["no_obj_ptr"], np.nan)
     with pytest.raises(InvalidInputError):
-        load_model(state, config=small_config())
+        load_network(state, config=small_config())

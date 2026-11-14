@@ -36,9 +36,9 @@ uv pip install "medsam2-mlx>=0.3.0"
 ## Run
 
 ```python
-from medsam2_mlx.medmlx import run
+from medsam2_mlx import segment
 
-result = run(
+result = segment(
     image_path="ct.nii.gz", output_dir="out",
     box_xyxy_pixels=[120, 140, 180, 200], frame_index=40, propagation="both",
 )
@@ -47,9 +47,10 @@ print(result["outputs"])
 
 Weights download from `MedMLX/medsam2-ct-lesion-mlx` on first use; `medmlx setup medsam2`
 downloads them ahead of time. For local weights, pass a folder containing
-`MedSAM2_CTLesion.safetensors`, or a checkpoint file, as `weights_path`. The published
+`MedSAM2_CTLesion.safetensors` as `weights_path`. The published
 [weight repository](https://huggingface.co/MedMLX/medsam2-mlx) also contains the other
-four MedSAM2 checkpoints.
+four MedSAM2 checkpoints; pass that folder as `weights_path` and the file name as
+`checkpoint`.
 
 ### Inputs and outputs
 
@@ -57,7 +58,8 @@ four MedSAM2 checkpoints.
 | --- | --- |
 | `image_path` | NIfTI CT volume or slice, `.npz` RECIST stack, or folder of `.jpg`/`.jpeg` frames |
 | `output_dir` | Directory for the outputs; created if missing |
-| `weights_path` | Optional folder containing `MedSAM2_CTLesion.safetensors`, or a `.safetensors` file |
+| `weights_path` | Optional model folder |
+| `checkpoint` | Checkpoint file name in the folder, `MedSAM2_CTLesion.safetensors` by default |
 | `box_xyxy_pixels` | `[x_min, y_min, x_max, y_max]` pixels on `frame_index`; combinable with `points_xy_pixels` |
 | `points_xy_pixels`, `point_labels` | `[[x, y], ...]` pixels on `frame_index`, each labeled `1` foreground or `0` background |
 | `mask_path` | Binary seed NIfTI with the input's shape and affine, instead of a box or points |
@@ -68,7 +70,7 @@ four MedSAM2 checkpoints.
 | `slice_range` | Optional inclusive `[start, end]` that contains every prompt's slice |
 | `stop_after_empty` | `8` by default: stop each propagation direction after that many consecutive slices with no foreground; `None` tracks the whole volume as upstream does |
 | `apply_postprocessing` | `True` by default: upstream stability fallback, binarized click memory and hole filling |
-| `overwrite` | `False` by default; existing outputs are never replaced |
+| `overwrite` | `False` by default; existing outputs are replaced only when `True` |
 
 **Prompts**
 
@@ -93,11 +95,11 @@ four MedSAM2 checkpoints.
 
 **Outputs**
 
-- `medsam2_mask.nii.gz`: uint16 labels with the input's shape, affine and header, plus
-  `medsam2_overlay.png` for single-slice inputs.
+- `mask.nii.gz` (role `mask`): uint16 labels with the input's shape, affine and header,
+  plus `preview.png` (role `preview`) for single-slice inputs.
 - Where objects overlap, the later object wins. Masks are not reduced to their largest
   3D connected component, which upstream's CT script does for each lesion.
-- `run` returns `{"outputs": {...}, "artifacts": {...}, "details": {...}}`. `artifacts` marks
+- `segment` returns `{"outputs": {...}, "artifacts": {...}, "details": {...}}`. `artifacts` marks
   the mask as a label map (one `object <obj_id>` label per prompted object) on the input's
   grid for NIfTI input, or in pixel space for `.npz` and frame-folder input; run metadata is
   in `details`.

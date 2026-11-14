@@ -26,7 +26,7 @@ from medsam2_mlx._types import (
     SessionState,
     Tensor,
 )
-from medsam2_mlx.mlx_weights import load_model
+from medsam2_mlx.mlx_weights import load_network
 from medsam2_mlx.request import MedSAM2RuntimeConfig
 from medsam2_mlx.sam2_base import MedSAM2Model
 from medsam2_mlx.video_predictor import SAM2VideoPredictor, fill_small_holes
@@ -385,7 +385,7 @@ def build_predictor(
 
     Raises:
         AssetNotReadyError: No weights, checkpoint or model was supplied.
-        InvalidInputError: The weights do not match the graph (from ``load_model``).
+        InvalidInputError: The weights do not match the graph (from ``load_network``).
     """
     if model is None:
         checkpoint = runtime.checkpoint if weights is None else weights
@@ -395,7 +395,7 @@ def build_predictor(
                 reason="missing weights",
                 hint="Pass weights=... or set MedSAM2RuntimeConfig(checkpoint=...).",
             )
-        model = load_model(
+        model = load_network(
             checkpoint,
             apply_postprocessing=runtime.apply_postprocessing,
         )
