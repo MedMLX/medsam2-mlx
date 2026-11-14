@@ -124,6 +124,7 @@ class CoreRuntime(Protocol):
     bfloat16: Dtype
     int32: Dtype
     uint16: Dtype
+    uint32: Dtype
     random: RandomRuntime
     metal: MetalRuntime
     fast: FastRuntime

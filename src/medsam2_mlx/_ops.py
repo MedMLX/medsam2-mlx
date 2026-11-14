@@ -29,6 +29,18 @@ from medmlx_core.typing import MetalKernel
 from medsam2_mlx._runtime import mx, nn
 
 
+def positive_fp32_mask(logits: array) -> array:
+    """Match NumPy's FP32 ``> 0`` without Metal flushing positive subnormals."""
+    values = logits.astype(mx.float32)
+    bits = values.view(mx.uint32)
+    magnitude = bits & mx.array(0x7FFFFFFF, dtype=mx.uint32)
+    return (
+        ((bits >> 31) == 0)
+        & (magnitude > 0)
+        & (magnitude <= mx.array(0x7F800000, dtype=mx.uint32))
+    )
+
+
 def gelu(x: array) -> array:
     """Exact (erf) GELU, as ``torch.nn.GELU()``."""
     return nn.gelu(x)

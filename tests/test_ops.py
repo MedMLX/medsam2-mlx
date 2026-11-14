@@ -7,8 +7,14 @@ from typing import TYPE_CHECKING, Protocol, cast
 import numpy as np
 import pytest
 
-from medsam2_mlx._ops import Conv2d, fill_small_holes_fp32, interpolate_bilinear
+from medsam2_mlx._ops import (
+    Conv2d,
+    fill_small_holes_fp32,
+    interpolate_bilinear,
+    positive_fp32_mask,
+)
 from medsam2_mlx._runtime import mx
+from medsam2_mlx._types import BoolArray
 from medsam2_mlx.mlx_model import resize_mask
 from medsam2_mlx.video_predictor import fill_small_holes
 from tests.real_images import xray_planes
@@ -16,6 +22,28 @@ from tests.reference_types import FloatArray, TorchRuntime
 
 if TYPE_CHECKING:
     from torch import Tensor
+
+
+def test_positive_fp32_mask_matches_numpy_including_subnormals() -> None:
+    """Preserve NumPy foreground decisions for FP32 boundary bit patterns on Metal."""
+    bits = np.array(
+        [
+            0x00000000, 0x80000000,  # Signed zeros.
+            0x00000001, 0x007FFFFF, 0x80000001, 0x807FFFFF,  # Subnormals.
+            0x00800000, 0x80800000, 0x3F800000, 0xBF800000,
+            0x7F7FFFFF, 0xFF7FFFFF, 0x7F800000, 0xFF800000,
+            0x7F800001, 0xFF800001, 0x7FC00000, 0xFFC00000,  # NaNs.
+        ],
+        dtype=np.uint32,
+    )
+    values = bits.view(np.float32)
+    # Transfer integer bits so constructing the test input cannot flush subnormals.
+    actual = cast(BoolArray, np.asarray(positive_fp32_mask(mx.array(bits).view(mx.float32))))
+    with np.errstate(invalid="ignore"):
+        expected = values > 0.0
+    assert actual.dtype == np.bool_
+    assert actual.itemsize == 1
+    np.testing.assert_array_equal(actual, expected)
 
 
 class TorchConvolution(Protocol):

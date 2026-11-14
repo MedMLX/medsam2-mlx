@@ -11,10 +11,12 @@ if TYPE_CHECKING:
 import numpy as np
 from medmlx_core.errors import AssetNotReadyError
 
+from medsam2_mlx._ops import positive_fp32_mask
 from medsam2_mlx._runtime import import_mlx
 from medsam2_mlx._storage import native_memory
 from medsam2_mlx._types import (
     ArrayInput,
+    BoolArray,
     FloatArray,
     FrameOutput,
     HostArray,
@@ -55,7 +57,8 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
 
     Returned mask logits are host ``np.ndarray`` (objects, 1, height, width) in FP32 at
     the original slice size given to ``init_state``. Foreground is logit > 0, the
-    threshold ``medmlx.mask_result`` applies. Set
+    threshold used by ``medmlx.mask_result``. The internal file-runner mode
+    exports Boolean foreground masks after resizing instead. Set
     ``inference_state["keep_image_features"] = True`` to cache every visited frame's
     backbone output instead of only the latest and prompted ones
     (faster re-visits, more memory).
@@ -63,6 +66,18 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
     produce nonfinite pointer positions; the predictor raises ``ValueError`` when
     its per-frame output check detects nonfinite values.
     """
+
+    def __init__(
+        self,
+        model: MedSAM2Model,
+        *,
+        fill_hole_area: int = 0,
+        retain_history: bool = True,
+        _binary_output: bool = False,
+    ) -> None:
+        """Attach a model and select the internal host-output representation."""
+        super().__init__(model, fill_hole_area=fill_hole_area, retain_history=retain_history)
+        self._binary_output = _binary_output
 
     def init_state(
         self,
@@ -230,13 +245,18 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
         if not all(bool(flag.item()) for flag in finite):
             raise ValueError("MedSAM2 MLX produced nonfinite output")
 
-    @staticmethod
-    def _host(masks: Tensor) -> FloatArray:
-        """Evaluate mask logits and copy them to the host as FP32."""
+    def _host(self, masks: Tensor) -> FloatArray | BoolArray:
+        """Export original-size logits as FP32, or Boolean masks for the file runner.
+
+        Callers have already resized logits and validated model outputs. Threshold
+        only here: resizing a binary low-resolution mask changes the foreground.
+        """
         mx = import_mlx()
         masks = mx.array(masks).astype(mx.float32)
+        if self._binary_output:
+            masks = positive_fp32_mask(masks)
         mx.eval(masks)
-        return cast(FloatArray, np.asarray(masks))
+        return cast(FloatArray | BoolArray, np.asarray(masks))
 
     def add_new_points_or_box(
         self,
@@ -248,8 +268,8 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
         clear_old_points: bool = True,
         normalize_coords: bool = True,
         box: ArrayInput | None = None,
-    ) -> tuple[int, list[int], FloatArray]:
-        """Add point or box prompts and return original-size FP32 masks on the host."""
+    ) -> tuple[int, list[int], FloatArray | BoolArray]:
+        """Add point or box prompts and return original-size host masks (FP32 by default)."""
         index, ids, masks = super().add_new_points_or_box(
             inference_state,
             frame_idx,
@@ -264,8 +284,8 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
 
     def add_new_mask(
         self, inference_state: SessionState, frame_idx: int, obj_id: int, mask: ArrayInput
-    ) -> tuple[int, list[int], FloatArray]:
-        """Add a mask prompt and return original-size FP32 masks on the host."""
+    ) -> tuple[int, list[int], FloatArray | BoolArray]:
+        """Add a mask prompt and return original-size host masks (FP32 by default)."""
         index, ids, masks = super().add_new_mask(inference_state, frame_idx, obj_id, mask)
         return index, ids, self._host(masks)
 
@@ -275,8 +295,8 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
         start_frame_idx: int | None = None,
         max_frame_num_to_track: int | None = None,
         reverse: bool = False,
-    ) -> Iterator[tuple[int, list[int], FloatArray]]:
-        """Yield tracked frames and original-size FP32 host masks in order."""
+    ) -> Iterator[tuple[int, list[int], FloatArray | BoolArray]]:
+        """Yield tracked frames and original-size host masks in order (FP32 by default)."""
         for index, ids, masks in super().propagate_in_video(
             inference_state,
             start_frame_idx=start_frame_idx,
@@ -292,7 +312,7 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
         frame_idx: int,
         obj_id: int,
         need_output: Literal[True] = True,
-    ) -> tuple[int, list[int], FloatArray]:
+    ) -> tuple[int, list[int], FloatArray | BoolArray]:
         """Clear one object frame prompt and optionally return updated host masks."""
         ...
 
@@ -310,7 +330,7 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
     @overload
     def clear_all_prompts_in_frame(
         self, inference_state: SessionState, frame_idx: int, obj_id: int, need_output: bool
-    ) -> tuple[int, list[int], FloatArray] | None:
+    ) -> tuple[int, list[int], FloatArray | BoolArray] | None:
         """Clear one object frame prompt and optionally return updated host masks."""
         ...
 
@@ -320,7 +340,7 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
         frame_idx: int,
         obj_id: int,
         need_output: bool = True,
-    ) -> tuple[int, list[int], FloatArray] | None:
+    ) -> tuple[int, list[int], FloatArray | BoolArray] | None:
         """Clear one object frame prompt and optionally return updated host masks."""
         result = super().clear_all_prompts_in_frame(
             inference_state, frame_idx, obj_id, need_output=need_output
@@ -336,7 +356,7 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
         obj_id: int,
         strict: bool = False,
         need_output: bool = True,
-    ) -> tuple[list[int], list[tuple[int, FloatArray]]]:
+    ) -> tuple[list[int], list[tuple[int, FloatArray | BoolArray]]]:
         """Remove an object and return remaining IDs and requested updated host masks."""
         ids, frames = super().remove_object(
             inference_state, obj_id, strict=strict, need_output=need_output
@@ -350,6 +370,7 @@ def build_predictor(
     weights: str | Path | Mapping[str, ArrayInput] | None = None,
     model: MedSAM2Model | None = None,
     retain_history: bool = True,
+    _binary_output: bool = False,
 ) -> MedSAM2MLXPredictor:
     """Build a predictor from converted weights or an already constructed MLX model.
 
@@ -359,6 +380,8 @@ def build_predictor(
     ``FILL_HOLE_AREA`` (8) pixels in the 128 x 128 mask logits.
     ``retain_history=False`` bounds automatic history for one-way batch propagation;
     reset before changing direction or revisiting an earlier frame.
+    The internal ``_binary_output`` mode thresholds resized FP32 logits on Metal
+    and exports Boolean arrays; the default preserves the public logits API.
 
     Raises:
         AssetNotReadyError: No weights, checkpoint or model was supplied.
@@ -380,4 +403,5 @@ def build_predictor(
         model,
         fill_hole_area=FILL_HOLE_AREA if runtime.apply_postprocessing else 0,
         retain_history=retain_history,
+        _binary_output=_binary_output,
     )

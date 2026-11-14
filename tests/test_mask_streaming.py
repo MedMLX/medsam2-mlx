@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from medsam2_mlx import medmlx
-from medsam2_mlx._types import BoolArray, HostArray, NumericArray, Propagation, RunnerPredictor
+from medsam2_mlx._types import BoolArray, HostArray, Propagation, RunnerPredictor
 from medsam2_mlx.request import MedSAM2Prompt
 
 
@@ -86,7 +86,7 @@ def test_runner_does_not_retain_a_volume_of_completed_masks(
     references: list[weakref.ReferenceType[BoolArray]] = []
     live_counts: list[int] = []
 
-    def observe(index: int, ids: Sequence[int], logits: NumericArray) -> medmlx.MaskResult:
+    def observe(index: int, ids: Sequence[int], logits: HostArray) -> medmlx.MaskResult:
         # Instrument ownership only; the real conversion produces every result unchanged.
         result = original(index, ids, logits)
         references.append(weakref.ref(result.masks))

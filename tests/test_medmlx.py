@@ -154,7 +154,7 @@ def test_run_with_seeded_network_matches_upstream(
     original = medmlx.mask_result
     observed: list[tuple[int, HostArray]] = []
 
-    def capture(index: int, ids: Sequence[int], logits: NumericArray) -> medmlx.MaskResult:
+    def capture(index: int, ids: Sequence[int], logits: HostArray) -> medmlx.MaskResult:
         """Record native predictor construction for the seeded runner."""
         observed.append((index, np.asarray(logits).copy()))
         return original(index, ids, logits)
@@ -168,13 +168,10 @@ def test_run_with_seeded_network_matches_upstream(
     )
     _check_outputs(result, volume, output_dir, expected)
     assert np.array_equal([index for index, _ in observed], expected["frame_order"])
-    for (_, logits), scores in zip(observed, expected["logits"], strict=True):
-        # FP32 kernels and BF16 stored memories differ across Torch CPU and MLX, so compare
-        # with a relative bound plus exact sign agreement.
-        delta = np.abs(logits[0] - scores)
-        scale = max(float(np.abs(scores).max()), 1e-12)
-        assert float(delta.max()) / scale < 1e-4
-        assert np.array_equal(logits[0] > 0, scores > 0)
+    for (_, masks), scores in zip(observed, expected["logits"], strict=True):
+        assert masks.dtype == np.bool_
+        assert masks.itemsize == 1
+        np.testing.assert_array_equal(masks[0], scores > 0)
 
 
 def test_publication_failure_restores_prior_mask_and_overlay(

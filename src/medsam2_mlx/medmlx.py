@@ -378,14 +378,19 @@ class MaskResult:
     masks: BoolArray
 
 
-def mask_result(frame_idx: int, obj_ids: Sequence[int], mask_logits: NumericArray) -> MaskResult:
-    """Threshold predictor logits at 0 into boolean masks.
+def mask_result(frame_idx: int, obj_ids: Sequence[int], mask_logits: HostArray) -> MaskResult:
+    """Accept Boolean predictor masks directly or threshold host logits at zero.
 
     A four-dimensional input uses its first channel; a two-dimensional input gains
     an object axis. Object count and array shape are not checked here.
     """
 
-    masks = np.asarray(mask_logits) > 0.0
+    values = np.asarray(mask_logits)
+    masks = (
+        cast(BoolArray, values)
+        if values.dtype == np.bool_
+        else cast(NumericArray, values) > 0.0
+    )
     if masks.ndim == 4:
         masks = masks[:, 0]
     if masks.ndim == 2:
@@ -393,7 +398,7 @@ def mask_result(frame_idx: int, obj_ids: Sequence[int], mask_logits: NumericArra
     return MaskResult(
         frame_idx=int(frame_idx),
         obj_ids=tuple(int(value) for value in obj_ids),
-        masks=masks.astype(bool),
+        masks=masks,
     )
 
 
@@ -444,7 +449,7 @@ class Session[StateT]:
                 clear_old_points=prompt.clear_old_points,
                 normalize_coords=prompt.normalize_coords,
             )
-        return mask_result(frame_idx, obj_ids, cast(NumericArray, mask_logits))
+        return mask_result(frame_idx, obj_ids, mask_logits)
 
     def propagate(
         self,
@@ -492,7 +497,7 @@ def _iter_propagation[StateT](
         reverse=reverse,
     )
     for frame_idx, obj_ids, mask_logits in frames:
-        result = mask_result(frame_idx, obj_ids, cast(NumericArray, mask_logits))
+        result = mask_result(frame_idx, obj_ids, mask_logits)
         empty_run = 0 if result.masks.any() else empty_run + 1
         yield result
         if stop_after_empty is not None and empty_run >= stop_after_empty:
@@ -761,7 +766,9 @@ def _build_predictor(runtime: MedSAM2RuntimeConfig, weights: Path) -> RunnerPred
     from medsam2_mlx.mlx_predictor import build_predictor
 
     try:
-        return build_predictor(runtime, weights=weights, retain_history=False)
+        return build_predictor(
+            runtime, weights=weights, retain_history=False, _binary_output=True
+        )
     except (InvalidInputError, OSError, RuntimeError, ValueError) as error:
         raise AssetNotReadyError(
             f"MedSAM2 MLX weights {weights} do not match the pinned sam2.1_hiera_t512 "
