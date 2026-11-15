@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, BinaryIO, Literal, NotRequired, Protocol, Type
 
 import numpy as np
 import numpy.typing as npt
-from medmlx_core.outputs import Artifact
+from medmlx_core.outputs import RunResult
 from medmlx_core.typing import MetalKernel
 
 if TYPE_CHECKING:
@@ -738,10 +738,8 @@ class RunnerDetails(TypedDict):
     backend: Literal["mlx"]
 
 
-class RunnerResult(TypedDict):
-    outputs: dict[str, str]
-    artifacts: dict[str, Artifact]
-    details: RunnerDetails
+# Return value of the MedSAM2 runner: mask and preview paths by role, with artifacts.
+type RunnerResult = RunResult[RunnerDetails]
 
 
 class VideoResolutionOutput(MemoryEntry):
