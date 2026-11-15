@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from medsam2_mlx.mlx_predictor import PreparedVideoFrames, build_predictor
     from medsam2_mlx.mlx_weights import load_network
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "MedSAM2Prompt",
