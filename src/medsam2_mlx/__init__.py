@@ -5,7 +5,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import TYPE_CHECKING
 
-from medsam2_mlx.medmlx import segment
+from medsam2_mlx.medmlx import run
 from medsam2_mlx.request import (
     MedSAM2Prompt,
     MedSAM2RuntimeConfig,
@@ -25,7 +25,7 @@ __all__ = [
     "build_predictor",
     "create_model",
     "load_network",
-    "segment",
+    "run",
 ]
 
 # MLX loads with the model modules, so importing the medmlx declaration stays light.

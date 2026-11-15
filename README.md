@@ -36,9 +36,9 @@ uv pip install "medsam2-mlx>=0.3.0"
 ## Run
 
 ```python
-from medsam2_mlx import segment
+from medsam2_mlx import run
 
-result = segment(
+result = run(
     image_path="ct.nii.gz", output_dir="out",
     box_xyxy_pixels=[120, 140, 180, 200], frame_index=40, propagation="both",
 )
@@ -99,7 +99,7 @@ four MedSAM2 checkpoints; pass that folder as `weights_path` and the file name a
   plus `preview.png` (role `preview`) for single-slice inputs.
 - Where objects overlap, the later object wins. Masks are not reduced to their largest
   3D connected component, which upstream's CT script does for each lesion.
-- `segment` returns `{"outputs": {...}, "artifacts": {...}, "details": {...}}`. `artifacts` marks
+- `run` returns `{"outputs": {...}, "artifacts": {...}, "details": {...}}`. `artifacts` marks
   the mask as a label map (one `object <obj_id>` label per prompted object) on the input's
   grid for NIfTI input, or in pixel space for `.npz` and frame-folder input; run metadata is
   in `details`.

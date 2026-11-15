@@ -179,7 +179,7 @@ def test_run_with_seeded_network_matches_upstream(
         return original(index, ids, logits)
 
     monkeypatch.setattr(medmlx, "mask_result", capture)
-    result = medmlx.segment(
+    result = medmlx.run(
         **_arguments(run, volume, mask),
         weights_path=seeded_weights,
         output_dir=output_dir,
@@ -203,7 +203,7 @@ def test_multiframe_run_removes_prior_preview(
     overlay = output / medmlx.PREVIEW_NAME
     overlay.write_bytes(b"overlay from a prior single-frame run")
 
-    result = medmlx.segment(
+    result = medmlx.run(
         **_arguments(run, volume, mask),
         weights_path=seeded_weights, output_dir=output, overwrite=True,
     )
@@ -214,7 +214,7 @@ def test_multiframe_run_removes_prior_preview(
     # An NPZ stack has no affine of its own, so its mask is in pixel space with no source grid.
     stack = tmp_path / "stack.npz"
     np.savez(stack, imgs=np.full((24, 24), 100, np.uint8))
-    npz_result = medmlx.segment(
+    npz_result = medmlx.run(
         image_path=stack, box_xyxy_pixels=[2, 3, 20, 15],
         weights_path=seeded_weights, output_dir=tmp_path / "npz-out",
     )
@@ -243,7 +243,7 @@ def test_mismatched_weights_raise_asset_not_ready(tmp_path: Path, weights: str) 
         mx.save_safetensors(str(tmp_path / weights), {"x": mx.zeros((2,))})
     (tmp_path / "corrupt.safetensors").write_bytes(b"\x00" * 16)
     with pytest.raises(AssetNotReadyError):
-        medmlx.segment(
+        medmlx.run(
             image_path=write_volume(tmp_path, "slice2d"),
             weights_path=tmp_path,
             checkpoint=weights,
@@ -308,7 +308,7 @@ def test_invalid_arguments_are_rejected_before_downloading_weights(
         else:
             mask_path.write_bytes(b"previous")
     with pytest.raises(InvalidInputError):
-        medmlx.segment(**cast(RunnerArguments, arguments))
+        medmlx.run(**cast(RunnerArguments, arguments))
 
 
 class _ScriptedPredictor:

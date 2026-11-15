@@ -47,7 +47,7 @@ MODEL = {
     "id": "medsam2",
     "label": "MedSAM2",
     "task": "segmentation",
-    "run": "medsam2_mlx.medmlx:segment",
+    "run": "medsam2_mlx.medmlx:run",
     # Measured MLX peak for one box tracked through 21 slices of a 512x512x147 CT;
     # larger inputs need more.
     "peak_memory_gb": 1.3,
@@ -969,7 +969,7 @@ def _parse_prompt_entry(entry: Mapping[str, object], *, default_frame_idx: int) 
     )
 
 
-def segment(
+def run(
     *,
     image_path: PathLike,
     weights_path: PathLike | None = None,
