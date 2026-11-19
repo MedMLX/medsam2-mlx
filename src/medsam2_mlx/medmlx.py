@@ -113,7 +113,7 @@ def read_nifti(path: Path) -> tuple[NiftiImage, NumericArray]:
         raise InvalidInputError(f"Unreadable MedSAM2 NIfTI {path}: {error}") from error
     if np.iscomplexobj(raw):
         raise InvalidInputError(f"MedSAM2 NIfTI voxels must be real: {path}")
-    if not np.isfinite(raw).all():
+    if raw.dtype.kind not in "iub" and not np.isfinite(raw).all():
         raise InvalidInputError(f"MedSAM2 NIfTI voxels must be finite: {path}")
     if slope == 1.0 and intercept == 0.0:
         values = raw
@@ -285,6 +285,8 @@ def ensure_uint8_stack(
         raise InvalidInputError("MedSAM2 image stack must be nonempty")
     if np.iscomplexobj(stack):
         raise InvalidInputError("MedSAM2 image stack must contain real values")
+    if stack.dtype.kind in "iu" and stack.dtype.itemsize <= 2:
+        return _uint8_from_table(stack, hu_window)
     if not np.isfinite(stack).all():
         raise InvalidInputError("MedSAM2 image stack must contain only finite values")
     if hu_window is not None:
@@ -294,14 +296,41 @@ def ensure_uint8_stack(
     high = float(np.max(stack))
     if high <= low:
         return np.zeros(stack.shape, dtype=np.uint8)
+    return _scale_to_uint8(stack, low, high)
+
+
+def _scale_to_uint8(values: NumericArray, low: float, high: float) -> HostArray:
+    """Min-max scale ``values`` from ``[low, high]`` (``low < high``) to truncated uint8."""
     span = high - low
     if not np.isfinite(span):
         raise InvalidInputError("MedSAM2 intensity range is too large to normalize")
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-        normalized = (stack - low) / span
+        normalized = (values - low) / span
     if not np.isfinite(normalized).all():
         raise InvalidInputError("MedSAM2 intensity normalization overflowed")
     return np.clip(normalized * 255.0, 0, 255).astype(np.uint8)
+
+
+def _uint8_from_table(stack: NumericArray, hu_window: tuple[float, float] | None) -> HostArray:
+    """Scale an 8- or 16-bit integer stack by looking every voxel up in a value table.
+
+    Clipping is monotonic, so the clipped range comes from the input extrema.
+    Apply the same min-max formula as the elementwise path without its full-volume
+    float64 temporaries.
+    """
+    unsigned = np.dtype(f"u{stack.dtype.itemsize}")
+    ends = np.array([np.min(stack), np.max(stack)], dtype=stack.dtype)
+    if hu_window is not None:
+        ends = np.clip(ends, *hu_window)
+    low, high = float(ends[0]), float(ends[1])
+    if high <= low:
+        return np.zeros(stack.shape, dtype=np.uint8)
+    values = np.arange(1 << (8 * stack.dtype.itemsize), dtype=unsigned).view(stack.dtype)
+    if hu_window is not None:
+        values = np.clip(values, *hu_window)
+        # Unused table entries must not overflow when the observed range is narrow.
+        values = np.clip(values, low, high)
+    return _scale_to_uint8(values, low, high)[stack.view(unsigned)]
 
 
 # --- Upstream CT preprocessing -------------------------------------------------------
@@ -345,10 +374,10 @@ def _prepare_frame(frame: HostArray, *, out: HostArray) -> None:
 class _PreparedStack:
     """Lazy ``PreparedVideoFrames`` over a uint8 ``(D, H, W)`` stack.
 
-    Each access prepares one slice exactly as ``prepare_medsam2_images`` does, so a
-    session never holds the whole FP32 (D, 3, 512, 512) stack (4 bytes x 3 channels
-    per 512 x 512 voxel) and the predictor's next-frame prefetch overlaps this host
-    work with GPU tracking.
+    Each access prepares one slice exactly as ``prepare_medsam2_images`` does.
+    The runner prepares the next slice and queues its encoding before waiting
+    for the current slice's tracking results. The predictor caches the next
+    slice's features, and the input stack remains uint8.
     """
 
     def __init__(self, stack: HostArray) -> None:
@@ -767,7 +796,11 @@ def _build_predictor(runtime: MedSAM2RuntimeConfig, weights: Path) -> RunnerPred
 
     try:
         return build_predictor(
-            runtime, weights=weights, retain_history=False, _binary_output=True
+            runtime,
+            weights=weights,
+            retain_history=False,
+            _binary_output=True,
+            _prefetch_host_frames=True,
         )
     except (InvalidInputError, OSError, RuntimeError, ValueError) as error:
         raise AssetNotReadyError(

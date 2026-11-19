@@ -74,10 +74,12 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
         fill_hole_area: int = 0,
         retain_history: bool = True,
         _binary_output: bool = False,
+        _prefetch_host_frames: bool = False,
     ) -> None:
-        """Attach a model and select the internal host-output representation."""
+        """Attach a model and configure internal mask export and frame prefetching."""
         super().__init__(model, fill_hole_area=fill_hole_area, retain_history=retain_history)
         self._binary_output = _binary_output
+        self._prefetch_host_frames = _prefetch_host_frames
 
     def init_state(
         self,
@@ -224,10 +226,10 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
     ) -> None:
         """Evaluate a frame with its outputs and reject nonfinite masks, pointers or memory.
 
-        The frame, its finite checks and ``outputs`` form one Metal batch. The next
-        frame's encoder is queued behind it before the host waits, so the GPU keeps
-        working while Python validates, returns this frame and builds the next one.
-        A nonfinite value still raises before the frame is stored or returned.
+        The frame, its finite checks and ``outputs`` form one Metal batch. For device
+        frames and the file runner's own host frames, queue the next frame's
+        encoder behind that batch before waiting for the finite checks. A nonfinite
+        value raises before the frame is stored or returned.
         """
         mx = import_mlx()
         arrays: list[array] = []
@@ -238,9 +240,10 @@ class MedSAM2MLXPredictor(SAM2VideoPredictor):
                 arrays.append(native_memory(compact["maskmem_features"]))
         finite = [mx.all(mx.isfinite(value)) for value in arrays]
         mx.async_eval(*arrays, *outputs, *finite)
-        # Host-resident frames are validated when read; reading ahead would raise
-        # the next frame's error before this one is returned.
-        if next_frame_idx is not None and not inference_state["offload_video_to_cpu"]:
+        # Validate caller-supplied host frames in the order they are returned.
+        if next_frame_idx is not None and (
+            self._prefetch_host_frames or not inference_state["offload_video_to_cpu"]
+        ):
             self._prefetch_image_feature(inference_state, next_frame_idx)
         if not all(bool(flag.item()) for flag in finite):
             raise ValueError("MedSAM2 MLX produced nonfinite output")
@@ -371,6 +374,7 @@ def build_predictor(
     model: MedSAM2Model | None = None,
     retain_history: bool = True,
     _binary_output: bool = False,
+    _prefetch_host_frames: bool = False,
 ) -> MedSAM2MLXPredictor:
     """Build a predictor from converted weights or an already constructed MLX model.
 
@@ -382,6 +386,8 @@ def build_predictor(
     reset before changing direction or revisiting an earlier frame.
     The internal ``_binary_output`` mode thresholds resized FP32 logits on Metal
     and exports Boolean arrays; the default preserves the public logits API.
+    The internal ``_prefetch_host_frames`` mode lets the file runner queue encoding
+    ahead for the finite slices it prepares.
 
     Raises:
         AssetNotReadyError: No weights, checkpoint or model was supplied.
@@ -404,4 +410,5 @@ def build_predictor(
         fill_hole_area=FILL_HOLE_AREA if runtime.apply_postprocessing else 0,
         retain_history=retain_history,
         _binary_output=_binary_output,
+        _prefetch_host_frames=_prefetch_host_frames,
     )

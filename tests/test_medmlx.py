@@ -132,6 +132,16 @@ def test_nifti_stacks_match_upstream_ct_reader(
     assert np.array_equal(stack, expected)
 
 
+def test_integer_stack_preserves_narrow_intensity_window() -> None:
+    """Normalize the present voxels when a finite window clips just above zero."""
+    values = np.array([[0, 1]], dtype=np.int16)
+    upper = float(np.nextafter(0.0, 1.0))
+
+    stack = medmlx.ensure_uint8_stack(values, hu_window=(-1.0, upper))
+
+    np.testing.assert_array_equal(stack, np.array([[[0, 255]]], dtype=np.uint8), strict=True)
+
+
 def test_preprocessing_matches_upstream_ct(reference: dict[str, HostArray]) -> None:
     """Compare CT frame preprocessing with the recorded source result."""
     prepared = medmlx.prepare_medsam2_images(reference["stack/slice2d"])
