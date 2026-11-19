@@ -926,7 +926,7 @@ def _parse_prompt_entry(entry: Mapping[str, object], *, default_frame_idx: int) 
     """Validate one ``prompts`` mapping; ``obj_id`` is required and ``frame_index`` defaults.
 
     ``mask_path`` is resolved to an absolute path and excludes
-    ``box_xyxy_pixels``/``points_xy_pixels``.
+    ``box_xyxy_pixels``/``points_xy_pixels``. A box requires ``clear_old_points``.
     """
 
     # Reject unknown keys so a misspelled or renamed key (such as ``frame_idx``) cannot
@@ -956,6 +956,12 @@ def _parse_prompt_entry(entry: Mapping[str, object], *, default_frame_idx: int) 
             "MedSAM2 prompts entry mask_path cannot combine with box_xyxy_pixels/points_xy_pixels"
         )
     clear_old_points = _require_bool("clear_old_points", entry.get("clear_old_points", True))
+    if box is not None and not clear_old_points:
+        # The predictor refuses this pairing (upstream SAM 2 does too); rejecting it here
+        # reports it as an input error before the weights load.
+        raise InvalidInputError(
+            "MedSAM2 prompts entry box_xyxy_pixels requires clear_old_points=true"
+        )
     normalize_coords = _require_bool("normalize_coords", entry.get("normalize_coords", True))
     return _PromptRequest(
         frame_idx=frame_idx,
@@ -1078,7 +1084,7 @@ def run(
         ``"object <obj_id>"``). For NIfTI input it is in ``image_physical`` space
         on the grid of ``image_path``. For ``.npz`` and frame-folder input its
         affine is synthetic (identity, or the NPZ ``spacing``), so it is in
-        ``pixel`` space with no ``grid_of``. ``overlay`` is a ``preview`` in
+        ``pixel`` space with no ``grid_of``. ``preview`` is a ``preview`` in
         ``pixel`` space. ``details`` holds the frame count and size,
         labeled voxel count, slices with labels, object ids, and every prompt.
 

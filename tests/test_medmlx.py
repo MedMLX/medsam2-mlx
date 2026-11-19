@@ -264,6 +264,7 @@ def test_mismatched_weights_raise_asset_not_ready(tmp_path: Path, weights: str) 
         "object-id-overflow",
         "prompt-object-id-overflow",
         "prompt-unknown-key",
+        "prompt-box-keeps-points",
     ],
 )
 def test_invalid_arguments_are_rejected_before_downloading_weights(
@@ -300,6 +301,12 @@ def test_invalid_arguments_are_rejected_before_downloading_weights(
         # The pre-rename key; frame 0 is valid, so only the unknown-key check can reject it.
         arguments.pop("box_xyxy_pixels")
         arguments["prompts"] = [{"obj_id": 1, "frame_idx": 0, "box_xyxy_pixels": [2, 3, 20, 15]}]
+    elif problem == "prompt-box-keeps-points":
+        # The predictor rejects this pairing only after the weights load.
+        arguments.pop("box_xyxy_pixels")
+        arguments["prompts"] = [
+            {"obj_id": 1, "box_xyxy_pixels": [2, 3, 20, 15], "clear_old_points": False}
+        ]
     else:
         output.mkdir()
         mask_path = output / medmlx.MASK_NAME
