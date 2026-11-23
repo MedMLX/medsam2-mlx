@@ -7,7 +7,9 @@ from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from medsam2_mlx._types import ArrayInput, NumericArray
+from medmlx_core.typing import ArrayInput
+
+from medsam2_mlx._types import NumericArray
 
 if TYPE_CHECKING:
     from medsam2_mlx.config import Sam2Config

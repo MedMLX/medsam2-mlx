@@ -79,7 +79,8 @@ four MedSAM2 checkpoints; pass that folder as `weights_path` and the file name a
   clipped.
 - Each `prompts` entry is a mapping with a required `obj_id` and any of `frame_index`,
   `box_xyxy_pixels`, `points_xy_pixels`, `point_labels`, `prompt_mask_path`,
-  `clear_old_points` and `normalize_coords`; other keys are rejected. IDs must be unique and fit in uint16.
+  `clear_old_points` and `normalize_coords`; other keys are rejected. A box requires
+  `clear_old_points` true (the default). IDs must be unique and fit in uint16.
 - With propagation, every prompt must be on the same frame. `"both"` resets and reseeds
   each object before the reverse pass, as the upstream CT examples do.
 

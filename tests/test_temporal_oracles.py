@@ -16,8 +16,8 @@ if TYPE_CHECKING:
     from medsam2_mlx.transformer import RoPEAttention
 import numpy as np
 import pytest
+from medmlx_core.typing import MlxRuntime
 
-from medsam2_mlx._types import CoreRuntime
 from tests.reference_types import FloatArray, SourceRoPE, TorchRuntime
 from tests.upstream_reference import import_upstream
 
@@ -26,7 +26,7 @@ _ATOL = 1e-4
 
 
 @pytest.fixture(scope="module")
-def rope_models() -> tuple[TorchRuntime, CoreRuntime, SourceRoPE, RoPEAttention]:
+def rope_models() -> tuple[TorchRuntime, MlxRuntime, SourceRoPE, RoPEAttention]:
     """Use actual CTLesion projection weights and the full-size MLX graph."""
     source_value = os.environ.get("MEDSAM2_SOURCE_ROOT")
     checkpoint_value = os.environ.get("MEDSAM2_CHECKPOINT")
@@ -79,7 +79,7 @@ def rope_models() -> tuple[TorchRuntime, CoreRuntime, SourceRoPE, RoPEAttention]
     + [pytest.param(3, 4, 3, id="three-by-three-query")],
 )
 def test_temporal_rope_matches_pinned_source(
-    rope_models: tuple[TorchRuntime, CoreRuntime, SourceRoPE, RoPEAttention],
+    rope_models: tuple[TorchRuntime, MlxRuntime, SourceRoPE, RoPEAttention],
     memory_grids: int,
     pointer_tokens: int,
     query_side: int,

@@ -10,12 +10,12 @@ if TYPE_CHECKING:
     from mlx.core import array
 import numpy as np
 from medmlx_core.errors import AssetNotReadyError
+from medmlx_core.typing import ArrayInput
 
 from medsam2_mlx._ops import positive_fp32_mask
 from medsam2_mlx._runtime import import_mlx
 from medsam2_mlx._storage import native_memory
 from medsam2_mlx._types import (
-    ArrayInput,
     BoolArray,
     FloatArray,
     FrameOutput,

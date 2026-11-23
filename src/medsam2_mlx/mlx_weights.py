@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import cast
 
 from medmlx_core.errors import InvalidInputError
+from medmlx_core.typing import ArrayInput
 
 from medsam2_mlx._runtime import import_mlx
-from medsam2_mlx._types import ArrayInput
 from medsam2_mlx.config import SAM2_1_HIERA_T512, Sam2Config
 from medsam2_mlx.mlx_model import create_model
 from medsam2_mlx.sam2_base import MedSAM2Model
