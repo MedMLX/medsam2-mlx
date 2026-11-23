@@ -695,7 +695,7 @@ class RunnerArguments(TypedDict, total=False):
     box_xyxy_pixels: Sequence[float] | None
     points_xy_pixels: Sequence[Sequence[float]] | None
     point_labels: Sequence[int] | None
-    mask_path: str | Path | None
+    prompt_mask_path: str | Path | None
     frame_index: int
     obj_id: int
     prompts: Sequence[Mapping[str, object]] | None
@@ -725,7 +725,7 @@ class RunnerDetails(TypedDict):
     frames_with_mask: list[int]
     object_ids: list[int]
     prompts: list[dict[str, object]]
-    mask_path: str | None
+    prompt_mask_path: str | None
     hu_window: list[float] | None
     propagation: Propagation
     slice_range: list[int] | None
@@ -762,7 +762,7 @@ class PromptedRunArguments(TypedDict):
     box_xyxy_pixels: NotRequired[Sequence[float] | None]
     points_xy_pixels: NotRequired[Sequence[Sequence[float]] | None]
     point_labels: NotRequired[Sequence[int] | None]
-    mask_path: NotRequired[str | Path | None]
+    prompt_mask_path: NotRequired[str | Path | None]
     prompts: NotRequired[Sequence[Mapping[str, object]] | None]
     hu_window: NotRequired[Sequence[float] | None]
     slice_range: NotRequired[Sequence[int] | None]

@@ -62,7 +62,7 @@ four MedSAM2 checkpoints; pass that folder as `weights_path` and the file name a
 | `checkpoint` | Checkpoint file name in the folder, `MedSAM2_CTLesion.safetensors` by default |
 | `box_xyxy_pixels` | `[x_min, y_min, x_max, y_max]` pixels on `frame_index`; combinable with `points_xy_pixels` |
 | `points_xy_pixels`, `point_labels` | `[[x, y], ...]` pixels on `frame_index`, each labeled `1` foreground or `0` background |
-| `mask_path` | Binary seed NIfTI with the input's shape and affine, instead of a box or points |
+| `prompt_mask_path` | Binary seed NIfTI with the input's shape and affine, instead of a box or points |
 | `frame_index`, `obj_id` | Zero-based prompt slice (default `0`) and positive object label (default `1`) |
 | `prompts` | Prompts for several objects, replacing the single-object arguments |
 | `hu_window` | Optional `(lower, upper)` clip before min-max scaling to uint8 |
@@ -78,8 +78,8 @@ four MedSAM2 checkpoints; pass that folder as `weights_path` and the file name a
   first two stored voxel axes. Coordinates are checked for shape and finiteness but not
   clipped.
 - Each `prompts` entry is a mapping with a required `obj_id` and any of `frame_index`,
-  `box_xyxy_pixels`, `points_xy_pixels`, `point_labels`, `mask_path`, `clear_old_points` and
-  `normalize_coords`; other keys are rejected. IDs must be unique and fit in uint16.
+  `box_xyxy_pixels`, `points_xy_pixels`, `point_labels`, `prompt_mask_path`,
+  `clear_old_points` and `normalize_coords`; other keys are rejected. IDs must be unique and fit in uint16.
 - With propagation, every prompt must be on the same frame. `"both"` resets and reseeds
   each object before the reverse pass, as the upstream CT examples do.
 
@@ -91,7 +91,7 @@ four MedSAM2 checkpoints; pass that folder as `weights_path` and the file name a
 | `.npz` | Follows the upstream RECIST script: `imgs` in `[0, 256)` is rounded and clipped to uint8, never min-max scaled, with an optional `spacing` |
 | Frame folder | Follows the upstream demo's video path; frames are read as grayscale, so color frames differ from upstream |
 
-`.npz` stacks and frame folders have no NIfTI grid, so `hu_window` and `mask_path` are rejected for them.
+`.npz` stacks and frame folders have no NIfTI grid, so `hu_window` and `prompt_mask_path` are rejected for them.
 
 **Outputs**
 

@@ -680,7 +680,7 @@ def load_source_aligned_mask(
         raise InvalidInputError(f"Missing MedSAM2 input: {mask_path}")
     if not _is_nifti(mask_path):
         raise InvalidInputError(
-            "MedSAM2 mask_path must be a source-aligned NIfTI (.nii/.nii.gz) mask"
+            "MedSAM2 prompt_mask_path must be a source-aligned NIfTI (.nii/.nii.gz) mask"
         )
     if not _is_nifti(input_path):
         raise InvalidInputError("NIfTI mask prompts require a NIfTI input volume")
@@ -928,7 +928,7 @@ class _PromptRequest:
     box: tuple[float, float, float, float] | None
     points_xy: tuple[tuple[float, float], ...]
     point_labels: tuple[int, ...]
-    mask_path: Path | None
+    prompt_mask_path: Path | None
     clear_old_points: bool
     normalize_coords: bool
 
@@ -951,14 +951,14 @@ def _require_prompts_sequence(value: object) -> Sequence[Mapping[str, object]]:
 
 _PROMPT_ENTRY_KEYS = frozenset({
     "obj_id", "frame_index", "box_xyxy_pixels", "points_xy_pixels", "point_labels",
-    "mask_path", "clear_old_points", "normalize_coords",
+    "prompt_mask_path", "clear_old_points", "normalize_coords",
 })
 
 
 def _parse_prompt_entry(entry: Mapping[str, object], *, default_frame_idx: int) -> _PromptRequest:
     """Validate one ``prompts`` mapping; ``obj_id`` is required and ``frame_index`` defaults.
 
-    ``mask_path`` is resolved to an absolute path and excludes
+    ``prompt_mask_path`` is resolved to an absolute path and excludes
     ``box_xyxy_pixels``/``points_xy_pixels``. A box requires ``clear_old_points``.
     """
 
@@ -980,13 +980,16 @@ def _parse_prompt_entry(entry: Mapping[str, object], *, default_frame_idx: int) 
     points_xy = () if raw_points is None else _points(raw_points)
     raw_labels = entry.get("point_labels")
     point_labels = () if raw_labels is None else _point_labels(raw_labels)
-    raw_mask_path = entry.get("mask_path")
-    if raw_mask_path is not None and not isinstance(raw_mask_path, str | Path):
-        raise InvalidInputError("MedSAM2 prompts entry mask_path must be a path")
-    mask_path = None if raw_mask_path is None else Path(raw_mask_path).expanduser().resolve()
-    if mask_path is not None and (box is not None or points_xy):
+    raw_prompt_mask_path = entry.get("prompt_mask_path")
+    if raw_prompt_mask_path is not None and not isinstance(raw_prompt_mask_path, str | Path):
+        raise InvalidInputError("MedSAM2 prompts entry prompt_mask_path must be a path")
+    prompt_mask_path = (
+        None if raw_prompt_mask_path is None else Path(raw_prompt_mask_path).expanduser().resolve()
+    )
+    if prompt_mask_path is not None and (box is not None or points_xy):
         raise InvalidInputError(
-            "MedSAM2 prompts entry mask_path cannot combine with box_xyxy_pixels/points_xy_pixels"
+            "MedSAM2 prompts entry prompt_mask_path cannot combine with "
+            "box_xyxy_pixels/points_xy_pixels"
         )
     clear_old_points = _require_bool("clear_old_points", entry.get("clear_old_points", True))
     if box is not None and not clear_old_points:
@@ -1002,7 +1005,7 @@ def _parse_prompt_entry(entry: Mapping[str, object], *, default_frame_idx: int) 
         box=box,
         points_xy=points_xy,
         point_labels=point_labels,
-        mask_path=mask_path,
+        prompt_mask_path=prompt_mask_path,
         clear_old_points=clear_old_points,
         normalize_coords=normalize_coords,
     )
@@ -1017,7 +1020,7 @@ def run(
     box_xyxy_pixels: Sequence[float] | None = None,
     points_xy_pixels: Sequence[Sequence[float]] | None = None,
     point_labels: Sequence[int] | None = None,
-    mask_path: str | Path | None = None,
+    prompt_mask_path: str | Path | None = None,
     frame_index: int = 0,
     obj_id: int = 1,
     prompts: Sequence[Mapping[str, object]] | None = None,
@@ -1039,11 +1042,11 @@ def run(
 
     There are two mutually exclusive ways to prompt. For one object, give
     ``box_xyxy_pixels`` and/or ``points_xy_pixels``/``point_labels`` (combinable, as upstream's
-    interactive predictor allows), or ``mask_path`` alone, with ``frame_index`` and
+    interactive predictor allows), or ``prompt_mask_path`` alone, with ``frame_index`` and
     ``obj_id`` naming its slice and label. For multiple objects, give ``prompts``
     instead: a sequence of mappings, each with a required ``obj_id`` and any of
     ``frame_index`` (default 0), ``box_xyxy_pixels``, ``points_xy_pixels``, ``point_labels``,
-    ``mask_path``, ``clear_old_points`` (default ``True``) and ``normalize_coords``
+    ``prompt_mask_path``, ``clear_old_points`` (default ``True``) and ``normalize_coords``
     (default ``True``), mirroring the upstream predictor's ``add_new_mask``/
     ``add_new_points_or_box`` calls for each tracked object. Every object is
     seeded before propagation runs; when propagation is enabled they must share a frame.
@@ -1062,7 +1065,7 @@ def run(
             extraction; direct ``.mp4`` decoding is out of scope here, since
             upstream's own video-file loader needs the extra ``decord``
             dependency and documents this same frame-folder path as its fallback.
-            ``hu_window`` and NIfTI ``mask_path`` prompts apply only to a NIfTI
+            ``hu_window`` and NIfTI ``prompt_mask_path`` prompts apply only to a NIfTI
             input.
         weights_path: Optional model folder; omitted downloads ``MedMLX/medsam2-ct-lesion-mlx``,
             which holds ``MedSAM2_CTLesion.safetensors``.
@@ -1072,20 +1075,20 @@ def run(
         output_dir: Directory for the outputs; created if missing.
         box_xyxy_pixels: Box prompt ``[x_min, y_min, x_max, y_max]`` in pixels of slice
             ``frame_index`` as stored (before the 512 x 512 resize). May combine with
-            ``points_xy_pixels``; not with ``mask_path``.
+            ``points_xy_pixels``; not with ``prompt_mask_path``.
         points_xy_pixels: Point prompts, each an ``[x, y]`` pixel pair on slice
             ``frame_index`` in the same coordinates, paired with ``point_labels``. May
-            combine with ``box_xyxy_pixels``; not with ``mask_path``.
+            combine with ``box_xyxy_pixels``; not with ``prompt_mask_path``.
         point_labels: One upstream SAM label per entry of ``points_xy_pixels``: ``1``
             for foreground, ``0`` for background.
-        mask_path: Binary NIfTI mask on the input's grid (same shape and exactly equal affine)
-            whose nonzero voxels all lie on slice ``frame_index``. Exclusive with
-            ``box_xyxy_pixels``/``points_xy_pixels``.
+        prompt_mask_path: Binary NIfTI mask prompt on the input's grid (same shape and
+            exactly equal affine) whose nonzero voxels all lie on slice ``frame_index``.
+            Exclusive with ``box_xyxy_pixels``/``points_xy_pixels``.
         frame_index: Zero-based slice index of the single-object prompt.
         obj_id: Positive label written for the single-object prompt. Output labels are
             uint16, so IDs must fit in 1..65535.
         prompts: Multiple objects' prompts; see above. Exclusive with
-            ``box_xyxy_pixels``, ``points_xy_pixels``, ``point_labels``, ``mask_path``, and
+            ``box_xyxy_pixels``, ``points_xy_pixels``, ``point_labels``, ``prompt_mask_path``, and
             with passing a non-default ``frame_index``/``obj_id``.
         hu_window: Optional ``(lower, upper)`` intensity clip, in the volume's own units
             (Hounsfield units for CT), applied before the volume is min-max scaled to
@@ -1198,27 +1201,29 @@ def run(
             box_xyxy_pixels is not None
             or points_xy_pixels is not None
             or point_labels is not None
-            or mask_path is not None
+            or prompt_mask_path is not None
             or frame_index != 0
             or obj_id != 1
         ):
             raise InvalidInputError(
-                "MedSAM2 prompts replaces box_xyxy_pixels/points_xy_pixels/point_labels/mask_path/"
-                "frame_index/obj_id; use only one prompt style"
+                "MedSAM2 prompts replaces box_xyxy_pixels/points_xy_pixels/point_labels/"
+                "prompt_mask_path/frame_index/obj_id; use only one prompt style"
             )
         requests = [
             _parse_prompt_entry(entry, default_frame_idx=0)
             for entry in _require_prompts_sequence(prompts)
         ]
     else:
-        if mask_path is not None and (box_xyxy_pixels is not None or points_xy_pixels is not None):
+        if prompt_mask_path is not None and (
+            box_xyxy_pixels is not None or points_xy_pixels is not None
+        ):
             raise InvalidInputError(
-                "MedSAM2 mask_path cannot combine with box_xyxy_pixels/points_xy_pixels"
+                "MedSAM2 prompt_mask_path cannot combine with box_xyxy_pixels/points_xy_pixels"
             )
-        if mask_path is None and box_xyxy_pixels is None and points_xy_pixels is None:
+        if prompt_mask_path is None and box_xyxy_pixels is None and points_xy_pixels is None:
             raise InvalidInputError(
                 "MedSAM2 requires one of box_xyxy_pixels, points_xy_pixels and point_labels, "
-                "or mask_path"
+                "or prompt_mask_path"
             )
         requests = [
             _PromptRequest(
@@ -1227,7 +1232,11 @@ def run(
                 box=None if box_xyxy_pixels is None else _box(box_xyxy_pixels),
                 points_xy=() if points_xy_pixels is None else _points(points_xy_pixels),
                 point_labels=() if point_labels is None else _point_labels(point_labels),
-                mask_path=None if mask_path is None else Path(mask_path).expanduser().resolve(),
+                prompt_mask_path=(
+                    None
+                    if prompt_mask_path is None
+                    else Path(prompt_mask_path).expanduser().resolve()
+                ),
                 clear_old_points=True,
                 normalize_coords=True,
             )
@@ -1235,7 +1244,9 @@ def run(
 
     _require_distinct_outputs(
         (mask_output, preview_output),
-        tuple(request.mask_path for request in requests if request.mask_path is not None),
+        tuple(
+            request.prompt_mask_path for request in requests if request.prompt_mask_path is not None
+        ),
     )
     object_ids = [request.obj_id for request in requests]
     if any(not 1 <= obj_id <= 65535 for obj_id in object_ids):
@@ -1248,19 +1259,19 @@ def run(
         )
 
     prompt_list: list[MedSAM2Prompt] = []
-    single_mask_path: Path | None = None
+    single_prompt_mask_path: Path | None = None
     for request in requests:
         if request.frame_idx < 0 or request.frame_idx >= stack.shape[0]:
             raise InvalidInputError(
                 f"MedSAM2 prompt frame must be within [0, {stack.shape[0] - 1}]"
             )
         mask = None
-        if request.mask_path is not None:
+        if request.prompt_mask_path is not None:
             mask = load_source_aligned_mask(
-                request.mask_path, source_path, source, stack.shape, request.frame_idx
+                request.prompt_mask_path, source_path, source, stack.shape, request.frame_idx
             )
             if len(requests) == 1:
-                single_mask_path = request.mask_path
+                single_prompt_mask_path = request.prompt_mask_path
         prompt_list.append(
             MedSAM2Prompt(
                 box_xyxy=request.box,
@@ -1337,7 +1348,9 @@ def run(
             "frames_with_mask": [int(index) for index in labelled],
             "object_ids": sorted({item.obj_id for item in prompt_tuple}),
             "prompts": [medsam2_prompt_payload(item) for item in prompt_tuple],
-            "mask_path": None if single_mask_path is None else single_mask_path.as_posix(),
+            "prompt_mask_path": (
+                None if single_prompt_mask_path is None else single_prompt_mask_path.as_posix()
+            ),
             "hu_window": None if window is None else list(window),
             "propagation": propagation,
             "slice_range": None if requested_range is None else list(requested_range),

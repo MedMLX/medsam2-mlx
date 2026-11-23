@@ -64,7 +64,7 @@ def _arguments(run: RunnerCase, volume: Path, mask: Path | None) -> PromptedRunA
         prompt["points_xy_pixels"] = [list(point) for point in run["points_xy"]]
         prompt["point_labels"] = list(run.get("point_labels", ()))
     if mask is not None:
-        prompt["mask_path"] = str(mask)
+        prompt["prompt_mask_path"] = str(mask)
     arguments: dict[str, object] = {"image_path": str(volume), "propagation": run["propagation"]}
     if "slice_range" in run:
         arguments["slice_range"] = list(run["slice_range"])
