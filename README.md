@@ -133,7 +133,6 @@ masks = {frame_idx: logits > 0 for frame_idx, ids, logits in predictor.propagate
   `normalize_coords=False`.
 - Weights must hold the 471 FP32 tensors of `sam2.1_hiera_t512`, which all five released
   MedSAM2 checkpoints share.
-- Inference requires Apple Silicon with Metal.
 
 ## Use with MedMLX
 
