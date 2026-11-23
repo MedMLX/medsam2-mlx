@@ -8,20 +8,19 @@ from importlib import import_module
 from types import ModuleType
 from typing import TYPE_CHECKING, cast
 
-from medsam2_mlx._types import CoreRuntime
-
 if TYPE_CHECKING:
     from mlx import nn as nn
 
-    mx: CoreRuntime
+    mx: MlxRuntime
 
 from medmlx_core.errors import MissingDependencyError
 from medmlx_core.runtime import import_mlx as _import_mlx
+from medmlx_core.typing import MlxRuntime
 
 _METAL_HINT = "Run medsam2-mlx on macOS arm64 with MLX installed and Metal available."
 
 
-def import_mlx() -> CoreRuntime:
+def import_mlx() -> MlxRuntime:
     """Return the MLX core module after admitting macOS arm64 with an available Metal GPU.
 
     The host admission runs once per process; it spawns ``sysctl`` subprocesses and the
@@ -38,7 +37,7 @@ def import_mlx() -> CoreRuntime:
 
 
 @cache
-def _admit_mlx() -> CoreRuntime:
+def _admit_mlx() -> MlxRuntime:
     """Admit the host and import MLX; failures raise and are not cached."""
     host = (platform.system(), platform.machine())
     if host != ("Darwin", "arm64"):
@@ -48,7 +47,7 @@ def _admit_mlx() -> CoreRuntime:
             hint=_METAL_HINT,
         )
     try:
-        mx = cast(CoreRuntime, _import_mlx())
+        mx = cast(MlxRuntime, _import_mlx())
     except MissingDependencyError as error:
         raise MissingDependencyError(str(error), extra="mlx", hint=_METAL_HINT) from error
     if not mx.metal.is_available():
@@ -60,7 +59,7 @@ def _admit_mlx() -> CoreRuntime:
     return mx
 
 
-def __getattr__(name: str) -> CoreRuntime | ModuleType:
+def __getattr__(name: str) -> MlxRuntime | ModuleType:
     """Resolve ``mx`` and ``nn`` lazily so importing the package does not load MLX."""
     if name not in {"mx", "nn"}:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

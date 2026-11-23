@@ -25,7 +25,7 @@ from medmlx_core.errors import (
 from medmlx_core.files import PathLike, output_targets, publish
 from medmlx_core.outputs import Artifact, artifact
 from medmlx_core.prompts import medsam2_prompt_payload
-from medmlx_core.weights import model_folder, weights_revision
+from medmlx_core.weights import weights_file, weights_revision
 
 from medsam2_mlx._types import (
     BoolArray,
@@ -769,22 +769,6 @@ def _require_distinct_outputs(outputs: Sequence[Path], inputs: Sequence[Path]) -
         raise InvalidInputError("MedSAM2 outputs must differ from input images, masks and weights")
 
 
-def _admit_weights(path: Path) -> Path:
-    """Require an existing converted ``.safetensors`` file, else raise ``AssetNotReadyError``."""
-
-    if not path.is_file():
-        raise AssetNotReadyError(
-            f"Missing MedSAM2 MLX weights: {path}", reason=f"missing {path}", hint=_WEIGHTS_HINT
-        )
-    if path.suffix.lower() != ".safetensors":
-        raise AssetNotReadyError(
-            f"MedSAM2 weights_path must be converted MLX weights (.safetensors): {path}",
-            reason=f"unconverted {path}",
-            hint=_WEIGHTS_HINT,
-        )
-    return path
-
-
 def _build_predictor(runtime: MedSAM2RuntimeConfig, weights: Path) -> RunnerPredictor[SessionState]:
     """Load converted weights into the ``sam2.1_hiera_t512`` MLX predictor.
 
@@ -1290,7 +1274,7 @@ def run(
     # Every argument is checked; only now may the weights download.
     # Keep the .safetensors name of Hub-cache symlinks for admission and loading;
     # their content-addressed targets have no extension. Alias checks still resolve paths.
-    weights = _admit_weights((model_folder("medsam2", weights_path) / checkpoint).absolute())
+    weights = weights_file("medsam2", weights_path, checkpoint)
     _require_distinct_outputs((mask_output, preview_output), (weights,))
     runtime = MedSAM2RuntimeConfig(checkpoint=weights, apply_postprocessing=apply_postprocessing)
     predictor = _build_predictor(runtime, weights)

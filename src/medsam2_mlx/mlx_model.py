@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from medsam2_mlx._types import ArrayInput, ImageFeatures, MemoryEntry, OutputBanks
+from medmlx_core.typing import ArrayInput
+
+from medsam2_mlx._types import ImageFeatures, MemoryEntry, OutputBanks
 
 if TYPE_CHECKING:
     from mlx.core import array

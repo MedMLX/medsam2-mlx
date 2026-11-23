@@ -28,12 +28,12 @@ from importlib import import_module
 from typing import Literal, cast, overload
 
 import numpy as np
+from medmlx_core.typing import ArrayInput
 
 from medsam2_mlx._ops import fill_small_holes_fp32, interpolate_bilinear
 from medsam2_mlx._runtime import mx
 from medsam2_mlx._storage import native_memory
 from medsam2_mlx._types import (
-    ArrayInput,
     ConnectedComponents,
     ConsolidatedOutput,
     FrameOutput,
