@@ -6,7 +6,7 @@ Segment lesions or organs from a box, point or mask prompt, then track them thro
 
 [![PyPI](https://img.shields.io/pypi/v/medsam2-mlx)](https://pypi.org/project/medsam2-mlx/)
 [![Python](https://img.shields.io/pypi/pyversions/medsam2-mlx)](https://pypi.org/project/medsam2-mlx/)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](https://github.com/MedMLX/medsam2-mlx/blob/v0.4.0/LICENSE)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](https://github.com/MedMLX/medsam2-mlx/blob/v0.5.0/LICENSE)
 [![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-MLX-black?logo=apple)](https://github.com/ml-explore/mlx)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97_Hugging_Face-weights-yellow)](https://huggingface.co/MedMLX/medsam2-ct-lesion-mlx)
 [![MedMLX](https://img.shields.io/badge/MedMLX-runtime-A51C30)](https://github.com/MedMLX/medmlx)
@@ -30,7 +30,7 @@ Segment lesions or organs from a box, point or mask prompt, then track them thro
 ```bash
 uv venv --python 3.13
 source .venv/bin/activate
-uv pip install "medsam2-mlx>=0.4.0"
+uv pip install "medsam2-mlx>=0.5.0"
 ```
 
 ## Run
@@ -152,4 +152,4 @@ For Codex, use `codex mcp add medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-wor
 
 ## License
 
-[Apache-2.0](https://github.com/MedMLX/medsam2-mlx/blob/v0.4.0/LICENSE). See [third-party notices](https://github.com/MedMLX/medsam2-mlx/blob/v0.4.0/THIRD_PARTY_NOTICES.md). Model weights retain their publisher terms; see the [model card](https://huggingface.co/MedMLX/medsam2-mlx).
+[Apache-2.0](https://github.com/MedMLX/medsam2-mlx/blob/v0.5.0/LICENSE). See [third-party notices](https://github.com/MedMLX/medsam2-mlx/blob/v0.5.0/THIRD_PARTY_NOTICES.md). Model weights retain their publisher terms; see the [model card](https://huggingface.co/MedMLX/medsam2-mlx).
