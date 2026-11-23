@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, BinaryIO, Literal, NotRequired, Protocol, Type
 import numpy as np
 import numpy.typing as npt
 from medmlx_core.outputs import RunResult
-from medmlx_core.typing import MetalKernel
+from medmlx_core.typing import HostArray, MetalKernel, MetalRuntime
 
 if TYPE_CHECKING:
     from mlx.core import (
@@ -28,7 +28,6 @@ if TYPE_CHECKING:
 type Scalar = int | float | bool | complex
 type ArrayInput = Scalar | array | npt.NDArray[np.generic] | Sequence[ArrayInput]
 type FloatArray = npt.NDArray[np.float32]
-type HostArray = npt.NDArray[np.generic]
 
 
 class ArrayConstructor(Protocol):
@@ -59,13 +58,6 @@ class RandomRuntime(Protocol):
         stream: StreamOrDevice = None,
     ) -> array:
         """Generate normally distributed MLX values with the requested shape."""
-        ...
-
-
-class MetalRuntime(Protocol):
-    @staticmethod
-    def is_available() -> bool:
-        """Report whether the Metal runtime is available."""
         ...
 
 
