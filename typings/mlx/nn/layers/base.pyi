@@ -1,4 +1,4 @@
-"""Repository-used MLX 0.32.4 ``mlx/nn/layers/base.py`` APIs, from the installed source.
+"""Repository-used MLX 0.32.5 ``mlx/nn/layers/base.py`` APIs, from the installed source.
 
 Module is a partial interface: the runtime class subclasses dict, but only the
 members this repository uses are declared.

@@ -1,4 +1,4 @@
-"""Repository-used MLX 0.32.4 ``mlx/utils.py`` APIs, from the installed source.
+"""Repository-used MLX 0.32.5 ``mlx/utils.py`` APIs, from the installed source.
 
 ``tree_flatten`` is declared only for parameter trees without ``destination``,
 where the runtime returns a list of dotted names and array leaves.
